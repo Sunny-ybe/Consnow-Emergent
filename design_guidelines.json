@@ -1,0 +1,162 @@
+{
+  "project_name": "Consnow",
+  "app_type": "mobile_web_app",
+  "framework": "React Native (Expo)",
+  "design_philosophy": {
+    "archetype": "Archetype 4 (Swiss & High-Contrast / Native OS)",
+    "theme": "Light",
+    "vibe": "Premium, privacy-first, trustworthy, clean, restrained. Inspired by Apple Find My, Things 3, Linear.",
+    "banned_elements": ["Purple/violet gradients", "Cluttered UI", "Generic Material Design shadows"]
+  },
+  "colors": {
+    "background": {
+      "primary": "#F9F9FB",
+      "secondary": "#FFFFFF",
+      "tertiary": "#F2F2F7",
+      "map_water": "#E5E5EA",
+      "map_land": "#F9F9FB"
+    },
+    "text": {
+      "primary": "#1C1C1E",
+      "secondary": "#8E8E93",
+      "tertiary": "#C7C7CC",
+      "inverse": "#FFFFFF"
+    },
+    "brand": {
+      "primary": "#0A0A0A",
+      "accent": "#007AFF",
+      "accent_muted": "#E5F1FF",
+      "success": "#34C759",
+      "warning": "#FF9500",
+      "danger": "#FF3B30",
+      "transit": "#5AC8FA"
+    },
+    "borders": {
+      "default": "#E5E5EA",
+      "focus": "#007AFF"
+    }
+  },
+  "typography": {
+    "font_family": {
+      "heading": "Manrope, sans-serif",
+      "body": "System, sans-serif",
+      "mono": "Space Mono, monospace"
+    },
+    "hierarchy": {
+      "h1_hero": { "size": "34px", "weight": "800", "tracking": "-1px", "line_height": "41px" },
+      "h2_section": { "size": "24px", "weight": "700", "tracking": "-0.5px", "line_height": "28px" },
+      "h3_card": { "size": "17px", "weight": "600", "tracking": "-0.2px", "line_height": "22px" },
+      "body_large": { "size": "17px", "weight": "400", "tracking": "0px", "line_height": "24px" },
+      "body_main": { "size": "15px", "weight": "400", "tracking": "0px", "line_height": "20px" },
+      "caption": { "size": "13px", "weight": "500", "tracking": "0.2px", "line_height": "18px" },
+      "overline": { "size": "11px", "weight": "700", "tracking": "1px", "line_height": "13px", "text_transform": "uppercase" }
+    }
+  },
+  "spacing_and_layout": {
+    "padding": {
+      "xs": "4px",
+      "sm": "8px",
+      "md": "16px",
+      "lg": "24px",
+      "xl": "32px",
+      "xxl": "48px"
+    },
+    "border_radius": {
+      "sm": "8px",
+      "md": "12px",
+      "lg": "16px",
+      "xl": "24px",
+      "pill": "9999px"
+    },
+    "shadows": {
+      "subtle": "0px 2px 8px rgba(0, 0, 0, 0.04)",
+      "card": "0px 4px 16px rgba(0, 0, 0, 0.08)",
+      "sheet": "0px -4px 24px rgba(0, 0, 0, 0.12)"
+    },
+    "screen_margins": "24px"
+  },
+  "components": {
+    "Timeline": {
+      "description": "The hero feature. A gorgeous vertical activity log with place names, durations, and transit indicators.",
+      "structure": "Vertical list grouped by Day. Left side: Timeline axis. Right side: Content cards.",
+      "visuals": {
+        "axis_line": "2px solid #E5E5EA",
+        "place_node": "12px solid circle in Brand Accent (#007AFF) for active, #8E8E93 for past",
+        "transit_node": "Dashed vertical line (#C7C7CC)",
+        "card_background": "#FFFFFF",
+        "card_radius": "16px",
+        "padding": "16px"
+      },
+      "interactions": "Smooth scroll, snap to day headers."
+    },
+    "ScopeSlider": {
+      "description": "Tactile slider for granular per-friend privacy control.",
+      "steps": ["10m", "1h", "6h", "12h", "24h", "Off"],
+      "visuals": {
+        "track": "8px height, #E5E5EA, fully rounded",
+        "fill": "#0A0A0A",
+        "thumb": "24px by 24px white circle with subtle shadow. Haptic feedback on step change."
+      }
+    },
+    "Map": {
+      "description": "Native minimal map.",
+      "style": "Muted grayscale or pale native style (no busy POIs).",
+      "friend_chip": "Floating pill above map. Glassmorphism backdrop-blur. Contains avatar and name."
+    },
+    "BottomNavigation": {
+      "description": "Tab bar for Map, Friends, Timeline, Profile.",
+      "visuals": {
+        "background": "#FFFFFF (90% opacity with blur)",
+        "active_color": "#0A0A0A",
+        "inactive_color": "#8E8E93",
+        "border_top": "1px solid #E5E5EA"
+      }
+    },
+    "Buttons": {
+      "primary": "Black (#0A0A0A) background, White text, 16px radius, 56px height.",
+      "secondary": "Gray (#F2F2F7) background, Black text, 16px radius.",
+      "danger": "Soft red (#FFEBEB) background, Red (#FF3B30) text."
+    }
+  },
+  "icons": {
+    "library": "lucide-react-native",
+    "stroke_width": 2,
+    "size_default": 24
+  },
+  "media": {
+    "onboarding": [
+      {
+        "category": "onboarding_map",
+        "url": "https://static.prod-images.emergentagent.com/jobs/fa21f578-eb5f-45e2-a851-23cf05e86db1/images/84f5eec326deff4fe8f8027794f79a6a95e92ef341cfe83b76dfce4374695dfb.png",
+        "description": "Minimalist 3D map pin connection for the first splash screen."
+      },
+      {
+        "category": "onboarding_privacy",
+        "url": "https://static.prod-images.emergentagent.com/jobs/fa21f578-eb5f-45e2-a851-23cf05e86db1/images/10321ca2e7380bfa5777482ef7fb70c0d54765a987fabbc439d46698db84bcba.png",
+        "description": "Glowing shield over folded map for the privacy permissions screen."
+      }
+    ],
+    "avatars": [
+      {
+        "category": "default_avatar_bg",
+        "url": "https://static.prod-images.emergentagent.com/jobs/fa21f578-eb5f-45e2-a851-23cf05e86db1/images/c38be4299c1dece03f1fea67c6b524e36d82c27fd9dac0bed89b8894bb9a8656.png",
+        "description": "Premium grainy gradient background for user initials/avatars."
+      }
+    ]
+  },
+  "testing": {
+    "rules": [
+      "All interactive and key informational elements MUST include a `testID` (React Native) or `data-testid` (Web) attribute.",
+      "Naming convention: kebab-case, role-based. Example: `login-form-submit-button`."
+    ]
+  },
+  "instructions_to_main_agent": {
+    "1": "Use React Native and Expo.",
+    "2": "Create a robust navigation structure (Tabs nested in a Stack for Auth/Onboarding).",
+    "3": "Implement UI components with standard StyleSheet, matching the premium minimal aesthetic.",
+    "4": "Timeline is the key feature - ensure the vertical axis and connecting lines between locations and transit look perfect.",
+    "5": "Slider must snap to the specified 6 values (10m, 1h, 6h, 12h, 24h, Off).",
+    "6": "Use the provided image URLs for the splash/onboarding and default avatar backgrounds.",
+    "7": "Use `lucide-react-native` for icons."
+  }
+}
