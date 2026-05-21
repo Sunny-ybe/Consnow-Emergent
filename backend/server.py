@@ -1,59 +1,532 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+"""Consnow backend - FastAPI + MongoDB + JWT auth + location tracking."""
 import logging
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List
-import uuid
-from datetime import datetime
+from typing import List, Optional
 
+import bcrypt
+import httpx
+import jwt
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, EmailStr, Field
+from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# ---------- Config ----------
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = os.environ["JWT_ALGORITHM"]
+JWT_EXPIRE_MINUTES = int(os.environ["JWT_EXPIRE_MINUTES"])
+GOOGLE_GEOCODING_API_KEY = os.environ["GOOGLE_GEOCODING_API_KEY"]
 
-# Create the main app without a prefix
-app = FastAPI()
+VALID_SCOPES = ["10m", "1h", "6h", "12h", "24h", "off"]
+SCOPE_TO_MINUTES = {
+    "10m": 10,
+    "1h": 60,
+    "6h": 360,
+    "12h": 720,
+    "24h": 1440,
+    "off": -1,
+}
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# Collections
+users_col = db["users"]
+friendships_col = db["friendships"]  # one row per pair
+locations_col = db["locations"]
+visits_col = db["visits"]
+
+app = FastAPI(title="Consnow API")
+api = APIRouter(prefix="/api")
+security = HTTPBearer()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("consnow")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+# ---------- Models ----------
+class SignupReq(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=128)
+    display_name: str = Field(min_length=1, max_length=60)
+    username: str = Field(min_length=3, max_length=30, pattern=r"^[a-zA-Z0-9_]+$")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+class LoginReq(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class AuthResp(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+class FriendRequestReq(BaseModel):
+    target_user_id: str
+
+
+class FriendRespondReq(BaseModel):
+    friendship_id: str
+    accept: bool
+
+
+class ScopeUpdateReq(BaseModel):
+    friend_user_id: str
+    scope: str  # 10m/1h/6h/12h/24h/off
+
+
+class LocationPing(BaseModel):
+    latitude: float
+    longitude: float
+    accuracy: Optional[float] = None
+    timestamp: Optional[str] = None  # ISO; defaults to now
+
+
+# ---------- Helpers ----------
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
+
+
+def create_token(user_id: str) -> str:
+    payload = {
+        "sub": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user = await users_col.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+def public_user(u: dict) -> dict:
+    return {
+        "id": u["id"],
+        "email": u.get("email"),
+        "username": u.get("username"),
+        "display_name": u.get("display_name"),
+    }
+
+
+async def reverse_geocode(lat: float, lng: float) -> dict:
+    """Use Google Geocoding API to get human-readable place name."""
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as cli:
+            r = await cli.get(
+                "https://maps.googleapis.com/maps/api/geocode/json",
+                params={"latlng": f"{lat},{lng}", "key": GOOGLE_GEOCODING_API_KEY},
+            )
+            data = r.json()
+            if data.get("status") != "OK" or not data.get("results"):
+                return {"place_name": f"{lat:.4f}, {lng:.4f}", "neighborhood": None, "city": None}
+
+            first = data["results"][0]
+            formatted = first.get("formatted_address", "")
+            comps = {c["types"][0]: c["long_name"] for c in first.get("address_components", []) if c.get("types")}
+            neighborhood = comps.get("sublocality") or comps.get("sublocality_level_1") or comps.get("neighborhood")
+            city = comps.get("locality") or comps.get("administrative_area_level_2")
+            short_name = neighborhood or city or formatted.split(",")[0]
+            return {
+                "place_name": short_name,
+                "formatted_address": formatted,
+                "neighborhood": neighborhood,
+                "city": city,
+            }
+    except Exception as e:
+        logger.warning(f"Geocoding failed: {e}")
+        return {"place_name": f"{lat:.4f}, {lng:.4f}", "neighborhood": None, "city": None}
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance in meters between two coords."""
+    from math import asin, cos, radians, sin, sqrt
+    R = 6371000.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dp = radians(lat2 - lat1)
+    dl = radians(lon2 - lon1)
+    a = sin(dp / 2) ** 2 + cos(p1) * cos(p2) * sin(dl / 2) ** 2
+    return 2 * R * asin(sqrt(a))
+
+
+def pair_key(a: str, b: str) -> List[str]:
+    return sorted([a, b])
+
+
+# ---------- Routes: Auth ----------
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"app": "Consnow", "status": "ok"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
+@api.post("/auth/signup", response_model=AuthResp)
+async def signup(req: SignupReq):
+    email = req.email.lower()
+    if await users_col.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    if await users_col.find_one({"username": req.username.lower()}):
+        raise HTTPException(status_code=400, detail="Username already taken")
 
-# Include the router in the main app
-app.include_router(api_router)
+    import uuid
+    user_id = str(uuid.uuid4())
+    doc = {
+        "id": user_id,
+        "email": email,
+        "username": req.username.lower(),
+        "display_name": req.display_name,
+        "password_hash": hash_password(req.password),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await users_col.insert_one(doc)
+    token = create_token(user_id)
+    return AuthResp(access_token=token, user=public_user(doc))
+
+
+@api.post("/auth/login", response_model=AuthResp)
+async def login(req: LoginReq):
+    user = await users_col.find_one({"email": req.email.lower()})
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = create_token(user["id"])
+    return AuthResp(access_token=token, user=public_user(user))
+
+
+@api.get("/auth/me")
+async def me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
+# ---------- Routes: Users / Search ----------
+@api.get("/users/search")
+async def search_users(q: str, current_user: dict = Depends(get_current_user)):
+    if not q or len(q.strip()) < 2:
+        return []
+    q = q.strip().lower()
+    cursor = users_col.find(
+        {
+            "$and": [
+                {"id": {"$ne": current_user["id"]}},
+                {
+                    "$or": [
+                        {"username": {"$regex": q, "$options": "i"}},
+                        {"display_name": {"$regex": q, "$options": "i"}},
+                        {"email": {"$regex": q, "$options": "i"}},
+                    ]
+                },
+            ]
+        },
+        {"_id": 0, "password_hash": 0, "email": 0},
+    ).limit(20)
+
+    results = []
+    async for u in cursor:
+        # Check friendship status
+        pair = pair_key(current_user["id"], u["id"])
+        f = await friendships_col.find_one({"pair": pair}, {"_id": 0})
+        status_val = "none"
+        if f:
+            status_val = f["status"]
+        results.append({**u, "friendship_status": status_val})
+    return results
+
+
+# ---------- Routes: Friendships ----------
+@api.post("/friends/request")
+async def send_friend_request(req: FriendRequestReq, current_user: dict = Depends(get_current_user)):
+    target = await users_col.find_one({"id": req.target_user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target["id"] == current_user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot friend yourself")
+
+    pair = pair_key(current_user["id"], target["id"])
+    existing = await friendships_col.find_one({"pair": pair})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Already {existing['status']}")
+
+    import uuid
+    f = {
+        "id": str(uuid.uuid4()),
+        "pair": pair,
+        "requester_id": current_user["id"],
+        "target_id": target["id"],
+        "status": "pending",  # pending|accepted|rejected
+        # scope granted by each user to the OTHER party
+        f"scope_{current_user['id']}": "10m",
+        f"scope_{target['id']}": "10m",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await friendships_col.insert_one(f)
+    return {"ok": True, "friendship_id": f["id"]}
+
+
+@api.post("/friends/respond")
+async def respond_friend_request(req: FriendRespondReq, current_user: dict = Depends(get_current_user)):
+    f = await friendships_col.find_one({"id": req.friendship_id})
+    if not f:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if f["target_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if f["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Already responded")
+
+    new_status = "accepted" if req.accept else "rejected"
+    await friendships_col.update_one({"id": req.friendship_id}, {"$set": {"status": new_status}})
+    return {"ok": True, "status": new_status}
+
+
+@api.get("/friends/list")
+async def list_friends(current_user: dict = Depends(get_current_user)):
+    uid = current_user["id"]
+    cursor = friendships_col.find({"pair": uid}, {"_id": 0})
+    # actually filter by uid in pair array
+    cursor = friendships_col.find({"pair": {"$in": [uid]}}, {"_id": 0})
+
+    friends = []
+    pending_incoming = []
+    pending_outgoing = []
+    async for f in cursor:
+        other_id = f["pair"][0] if f["pair"][1] == uid else f["pair"][1]
+        other = await users_col.find_one({"id": other_id}, {"_id": 0, "password_hash": 0, "email": 0})
+        if not other:
+            continue
+        entry = {
+            "friendship_id": f["id"],
+            "user": other,
+            "status": f["status"],
+            "scope_i_grant": f.get(f"scope_{uid}", "10m"),  # what I share with them
+            "scope_they_grant": f.get(f"scope_{other_id}", "10m"),  # what they share with me
+        }
+        if f["status"] == "accepted":
+            # last seen
+            last = await locations_col.find_one(
+                {"user_id": other_id}, {"_id": 0}, sort=[("timestamp", -1)]
+            )
+            if last:
+                entry["last_seen"] = {
+                    "place_name": last.get("place_name"),
+                    "timestamp": last.get("timestamp"),
+                }
+            friends.append(entry)
+        elif f["status"] == "pending":
+            if f["requester_id"] == uid:
+                pending_outgoing.append(entry)
+            else:
+                pending_incoming.append(entry)
+
+    return {
+        "friends": friends,
+        "pending_incoming": pending_incoming,
+        "pending_outgoing": pending_outgoing,
+    }
+
+
+@api.put("/friends/scope")
+async def update_scope(req: ScopeUpdateReq, current_user: dict = Depends(get_current_user)):
+    if req.scope not in VALID_SCOPES:
+        raise HTTPException(status_code=400, detail="Invalid scope")
+    pair = pair_key(current_user["id"], req.friend_user_id)
+    f = await friendships_col.find_one({"pair": pair})
+    if not f or f["status"] != "accepted":
+        raise HTTPException(status_code=404, detail="Friendship not found")
+    await friendships_col.update_one(
+        {"pair": pair}, {"$set": {f"scope_{current_user['id']}": req.scope}}
+    )
+    return {"ok": True, "scope": req.scope}
+
+
+# ---------- Routes: Location ----------
+@api.post("/locations/ping")
+async def location_ping(ping: LocationPing, current_user: dict = Depends(get_current_user)):
+    uid = current_user["id"]
+    now_iso = ping.timestamp or datetime.now(timezone.utc).isoformat()
+
+    # Reverse geocode
+    geo = await reverse_geocode(ping.latitude, ping.longitude)
+
+    import uuid
+    loc_doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": uid,
+        "latitude": ping.latitude,
+        "longitude": ping.longitude,
+        "accuracy": ping.accuracy,
+        "timestamp": now_iso,
+        **geo,
+    }
+    await locations_col.insert_one(loc_doc)
+
+    # Update/create visit (group consecutive pings at same place)
+    last_visit = await visits_col.find_one(
+        {"user_id": uid}, {"_id": 0}, sort=[("started_at", -1)]
+    )
+
+    same_place = False
+    if last_visit:
+        # consider same place if within 100m of visit center
+        dist = haversine_m(
+            last_visit["center_lat"], last_visit["center_lng"], ping.latitude, ping.longitude
+        )
+        same_place = dist < 100
+
+    if same_place:
+        await visits_col.update_one(
+            {"id": last_visit["id"]},
+            {
+                "$set": {
+                    "ended_at": now_iso,
+                    "place_name": geo["place_name"],  # refresh if changed
+                    "last_lat": ping.latitude,
+                    "last_lng": ping.longitude,
+                }
+            },
+        )
+    else:
+        new_visit = {
+            "id": str(uuid.uuid4()),
+            "user_id": uid,
+            "center_lat": ping.latitude,
+            "center_lng": ping.longitude,
+            "last_lat": ping.latitude,
+            "last_lng": ping.longitude,
+            "place_name": geo["place_name"],
+            "formatted_address": geo.get("formatted_address"),
+            "neighborhood": geo.get("neighborhood"),
+            "city": geo.get("city"),
+            "started_at": now_iso,
+            "ended_at": now_iso,
+        }
+        await visits_col.insert_one(new_visit)
+
+    return {"ok": True, "place_name": geo["place_name"]}
+
+
+@api.get("/locations/timeline")
+async def get_timeline(
+    user_id: Optional[str] = None,
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return visits timeline for a user. If user_id is another user, apply scope filter."""
+    target_id = user_id or current_user["id"]
+
+    if target_id != current_user["id"]:
+        # check friendship + scope they granted me
+        pair = pair_key(current_user["id"], target_id)
+        f = await friendships_col.find_one({"pair": pair})
+        if not f or f["status"] != "accepted":
+            raise HTTPException(status_code=403, detail="Not friends")
+        their_scope = f.get(f"scope_{target_id}", "10m")
+        if their_scope == "off":
+            return {"visits": [], "scope": "off"}
+        # Filter to only show visits where ended_at is older than scope minutes ago
+        max_age_min = SCOPE_TO_MINUTES[their_scope]
+        # actually scope means "update frequency" not history limit -
+        # we serve visits that ended at least scope_minutes ago (delay)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
+        cursor = visits_col.find(
+            {"user_id": target_id, "ended_at": {"$lte": cutoff.isoformat()}},
+            {"_id": 0},
+        ).sort("started_at", -1).limit(limit)
+    else:
+        cursor = visits_col.find({"user_id": target_id}, {"_id": 0}).sort("started_at", -1).limit(limit)
+
+    visits = []
+    async for v in cursor:
+        visits.append(v)
+    return {"visits": visits}
+
+
+@api.get("/locations/latest")
+async def get_latest_location(
+    user_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    target_id = user_id or current_user["id"]
+    if target_id != current_user["id"]:
+        pair = pair_key(current_user["id"], target_id)
+        f = await friendships_col.find_one({"pair": pair})
+        if not f or f["status"] != "accepted":
+            raise HTTPException(status_code=403, detail="Not friends")
+        their_scope = f.get(f"scope_{target_id}", "10m")
+        if their_scope == "off":
+            return None
+        max_age_min = SCOPE_TO_MINUTES[their_scope]
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
+        last = await locations_col.find_one(
+            {"user_id": target_id, "timestamp": {"$lte": cutoff.isoformat()}},
+            {"_id": 0},
+            sort=[("timestamp", -1)],
+        )
+    else:
+        last = await locations_col.find_one(
+            {"user_id": target_id}, {"_id": 0}, sort=[("timestamp", -1)]
+        )
+    return last
+
+
+@api.get("/locations/recent")
+async def recent_locations(
+    user_id: Optional[str] = None,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    """Recent raw pings for map display."""
+    target_id = user_id or current_user["id"]
+    if target_id != current_user["id"]:
+        pair = pair_key(current_user["id"], target_id)
+        f = await friendships_col.find_one({"pair": pair})
+        if not f or f["status"] != "accepted":
+            raise HTTPException(status_code=403, detail="Not friends")
+        their_scope = f.get(f"scope_{target_id}", "10m")
+        if their_scope == "off":
+            return []
+        max_age_min = SCOPE_TO_MINUTES[their_scope]
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
+        cursor = locations_col.find(
+            {"user_id": target_id, "timestamp": {"$lte": cutoff.isoformat()}},
+            {"_id": 0},
+        ).sort("timestamp", -1).limit(limit)
+    else:
+        cursor = locations_col.find({"user_id": target_id}, {"_id": 0}).sort("timestamp", -1).limit(limit)
+
+    pings = []
+    async for p in cursor:
+        pings.append(p)
+    return pings
+
+
+# Mount router
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,12 +536,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
