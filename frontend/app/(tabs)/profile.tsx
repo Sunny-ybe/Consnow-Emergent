@@ -12,6 +12,8 @@ import {
   stopBackgroundTracking,
   requestForegroundPermission,
   requestBackgroundPermission,
+  backgroundTrackingUnsupported,
+  backgroundUnsupportedReason,
 } from '@/src/locationService';
 
 export default function ProfileScreen() {
@@ -30,6 +32,11 @@ export default function ProfileScreen() {
   );
 
   const toggleTracking = async (next: boolean) => {
+    if (backgroundTrackingUnsupported) {
+      Alert.alert('Not available here', backgroundUnsupportedReason());
+      setTracking(false);
+      return;
+    }
     if (next) {
       const fg = await requestForegroundPermission();
       if (!fg) {
@@ -45,6 +52,9 @@ export default function ProfileScreen() {
       }
       const ok = await startBackgroundTracking();
       setTracking(ok);
+      if (!ok) {
+        Alert.alert('Could not start', backgroundUnsupportedReason() || 'Please retry.');
+      }
     } else {
       await stopBackgroundTracking();
       setTracking(false);
@@ -87,12 +97,17 @@ export default function ProfileScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.settingLabel}>Background sharing</Text>
-            <Text style={styles.settingHint}>Updates friends every ~10 min as you move</Text>
+            <Text style={styles.settingHint}>
+              {backgroundTrackingUnsupported
+                ? backgroundUnsupportedReason()
+                : 'Updates friends every ~10 min as you move'}
+            </Text>
           </View>
           <Switch
             testID="profile-tracking-switch"
             value={tracking}
             onValueChange={toggleTracking}
+            disabled={backgroundTrackingUnsupported}
             trackColor={{ true: colors.brand, false: colors.border }}
             thumbColor={'#fff'}
           />

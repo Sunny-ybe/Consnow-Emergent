@@ -11,13 +11,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronLeft, MapPin } from 'lucide-react-native';
-import * as Haptics from 'expo-haptics';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import { Avatar } from '@/src/Avatar';
+import { SnapSlider } from '@/src/SnapSlider';
 import { getTimeline, listFriends, updateScope } from '@/src/api';
 import { formatTimeAgo } from '../(tabs)/index';
 
-const SCOPES = ['10m', '1h', '6h', '12h', '24h', 'off'] as const;
+const SCOPES = ['10m', '1h', '6h', '12h', '24h', 'off'];
+const SCOPE_LABELS_SHORT = ['10m', '1h', '6h', '12h', '24h', 'Off'];
 const SCOPE_LABELS: Record<string, string> = {
   '10m': '10 min',
   '1h': '1 hour',
@@ -65,7 +66,6 @@ export default function FriendDetailScreen() {
     setSaving(true);
     setScope(s);
     try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       await updateScope(id, s);
     } catch (e: any) {
       Alert.alert('Could not update', e?.response?.data?.detail || 'Try again');
@@ -123,21 +123,13 @@ export default function FriendDetailScreen() {
           <Text style={styles.scopeLabel}>
             Updates every <Text style={{ fontWeight: '800' }}>{SCOPE_LABELS[scope]}</Text>
           </Text>
-          <View style={styles.scopeOptions}>
-            {SCOPES.map((s) => (
-              <TouchableOpacity
-                key={s}
-                testID={`scope-${s}`}
-                onPress={() => onSelectScope(s)}
-                style={[styles.scopePill, scope === s && styles.scopePillActive]}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.scopePillText, scope === s && styles.scopePillTextActive]}>
-                  {SCOPE_LABELS[s]}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          <SnapSlider
+            testID="scope-slider"
+            steps={SCOPES}
+            labels={SCOPE_LABELS_SHORT}
+            value={scope}
+            onChange={onSelectScope}
+          />
           <Text style={styles.scopeHint}>
             {scope === 'off'
               ? 'They will not see any new location updates from you.'
@@ -226,19 +218,7 @@ const styles = StyleSheet.create({
     ...shadow.subtle,
   },
   scopeLabel: { ...typography.bodyLarge, color: colors.textPrimary, marginBottom: spacing.md },
-  scopeOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: spacing.sm },
-  scopePill: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: radius.pill,
-    backgroundColor: colors.bgTertiary,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  scopePillActive: { backgroundColor: colors.brand, borderColor: colors.brand },
-  scopePillText: { ...typography.caption, color: colors.textPrimary, fontWeight: '700' },
-  scopePillTextActive: { color: colors.textInverse },
-  scopeHint: { ...typography.caption, color: colors.textSecondary, marginTop: 4 },
+  scopeHint: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.sm },
   theirCard: {
     backgroundColor: colors.bgTertiary,
     padding: spacing.md,

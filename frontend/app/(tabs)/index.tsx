@@ -21,6 +21,8 @@ import {
   startBackgroundTracking,
   stopBackgroundTracking,
   isBackgroundTrackingActive,
+  backgroundTrackingUnsupported,
+  backgroundUnsupportedReason,
 } from '@/src/locationService';
 import { pingLocation, getLatestLocation } from '@/src/api';
 import { useAuth } from '@/src/auth';
@@ -83,6 +85,10 @@ export default function MapTabScreen() {
   };
 
   const toggleBackground = async () => {
+    if (backgroundTrackingUnsupported) {
+      Alert.alert('Not available here', backgroundUnsupportedReason());
+      return;
+    }
     if (tracking) {
       await stopBackgroundTracking();
       setTracking(false);
@@ -107,10 +113,8 @@ export default function MapTabScreen() {
       if (ok) {
         setTracking(true);
         Alert.alert('Background sharing on', 'We will quietly update your friends as you move.');
-      } else if (Platform.OS === 'web') {
-        Alert.alert('Not supported', 'Background tracking is mobile-only.');
       } else {
-        Alert.alert('Could not start', 'Please retry.');
+        Alert.alert('Could not start', backgroundUnsupportedReason() || 'Please retry.');
       }
     }
   };
@@ -169,15 +173,27 @@ export default function MapTabScreen() {
 
         <TouchableOpacity
           testID="toggle-background-button"
-          style={[styles.secondaryBtn, tracking && styles.secondaryBtnActive]}
+          style={[
+            styles.secondaryBtn,
+            tracking && styles.secondaryBtnActive,
+            backgroundTrackingUnsupported && styles.secondaryBtnDisabled,
+          ]}
           onPress={toggleBackground}
           activeOpacity={0.85}
         >
           <Power size={18} color={tracking ? colors.success : colors.textPrimary} strokeWidth={2.4} />
           <Text style={[styles.secondaryBtnText, tracking && { color: colors.success }]}>
-            {tracking ? 'Background sharing: ON' : 'Turn on background sharing'}
+            {backgroundTrackingUnsupported
+              ? 'Background sharing (Expo Go: unavailable)'
+              : tracking
+              ? 'Background sharing: ON'
+              : 'Turn on background sharing'}
           </Text>
         </TouchableOpacity>
+
+        {backgroundTrackingUnsupported && (
+          <Text style={styles.unsupportedHint}>{backgroundUnsupportedReason()}</Text>
+        )}
 
         <View style={styles.infoCard}>
           <Loader size={18} color={colors.textSecondary} strokeWidth={2} />
@@ -250,7 +266,15 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   secondaryBtnActive: { borderColor: colors.success, backgroundColor: '#ECFFF1' },
+  secondaryBtnDisabled: { opacity: 0.7 },
   secondaryBtnText: { color: colors.textPrimary, fontSize: 15, fontWeight: '600' },
+  unsupportedHint: {
+    ...typography.caption,
+    color: colors.warning,
+    paddingHorizontal: 4,
+    marginTop: 6,
+    lineHeight: 18,
+  },
   infoCard: {
     flexDirection: 'row',
     gap: 10,

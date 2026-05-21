@@ -1,7 +1,25 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { api, loadAuthToken } from './api';
+
+// True when running inside Expo Go (which restricts background location)
+export const isExpoGo = Constants.executionEnvironment === 'storeClient';
+
+// True when background tracking is fundamentally not available
+export const backgroundTrackingUnsupported =
+  Platform.OS === 'web' || isExpoGo;
+
+export function backgroundUnsupportedReason(): string {
+  if (Platform.OS === 'web') {
+    return 'Background tracking is mobile-only. Open Consnow on iOS or Android.';
+  }
+  if (isExpoGo) {
+    return 'Background location is disabled in Expo Go. Use a production build (via Publish) for 24/7 sharing.';
+  }
+  return '';
+}
 
 const BACKGROUND_TASK_NAME = 'CONSNOW_BACKGROUND_LOCATION';
 
@@ -57,7 +75,7 @@ export async function getCurrentLocation(): Promise<Location.LocationObject | nu
 }
 
 export async function startBackgroundTracking(): Promise<boolean> {
-  if (Platform.OS === 'web') return false;
+  if (backgroundTrackingUnsupported) return false;
   try {
     const isRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK_NAME);
     if (isRunning) return true;
@@ -82,7 +100,7 @@ export async function startBackgroundTracking(): Promise<boolean> {
 }
 
 export async function stopBackgroundTracking(): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (backgroundTrackingUnsupported) return;
   try {
     const isRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK_NAME);
     if (isRunning) {
@@ -94,7 +112,7 @@ export async function stopBackgroundTracking(): Promise<void> {
 }
 
 export async function isBackgroundTrackingActive(): Promise<boolean> {
-  if (Platform.OS === 'web') return false;
+  if (backgroundTrackingUnsupported) return false;
   try {
     return await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK_NAME);
   } catch {
