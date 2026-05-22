@@ -25,6 +25,7 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ["JWT_ALGORITHM"]
 JWT_EXPIRE_MINUTES = int(os.environ["JWT_EXPIRE_MINUTES"])
 GOOGLE_GEOCODING_API_KEY = os.environ["GOOGLE_GEOCODING_API_KEY"]
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 VALID_SCOPES = ["10m", "1h", "6h", "12h", "24h", "off"]
 SCOPE_TO_MINUTES = {
@@ -523,6 +524,115 @@ async def recent_locations(
     async for p in cursor:
         pings.append(p)
     return pings
+
+
+def _format_duration_human(start_iso: str, end_iso: str) -> str:
+    try:
+        s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        mins = max(0, int((e - s).total_seconds() // 60))
+        if mins < 1:
+            return "briefly"
+        if mins < 60:
+            return f"{mins} min"
+        h = mins // 60
+        m = mins % 60
+        return f"{h}h" if m == 0 else f"{h}h {m}m"
+    except Exception:
+        return ""
+
+
+def _format_time_human(iso: str) -> str:
+    try:
+        d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return d.strftime("%-I:%M %p")
+    except Exception:
+        return ""
+
+
+@api.get("/locations/narrative/{user_id}")
+async def get_day_narrative(
+    user_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate a warm, human, AI narrative of the last 12 hours of visits."""
+    target_id = user_id
+
+    # Auth + scope check (same pattern as timeline)
+    if target_id != current_user["id"]:
+        pair = pair_key(current_user["id"], target_id)
+        f = await friendships_col.find_one({"pair": pair})
+        if not f or f["status"] != "accepted":
+            raise HTTPException(status_code=403, detail="Not friends")
+        their_scope = f.get(f"scope_{target_id}", "10m")
+        if their_scope == "off":
+            return {"narrative": "They've paused sharing for now."}
+        max_age_min = SCOPE_TO_MINUTES[their_scope]
+        cutoff_scope = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
+        time_filter = {"ended_at": {"$lte": cutoff_scope.isoformat()}}
+    else:
+        time_filter = {}
+
+    # Last 12 hours window
+    twelve_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+    query = {
+        "user_id": target_id,
+        "started_at": {"$gte": twelve_hours_ago},
+        **time_filter,
+    }
+    cursor = visits_col.find(query, {"_id": 0}).sort("started_at", 1)
+    visits = []
+    async for v in cursor:
+        visits.append(v)
+
+    # Build readable timeline string
+    if not visits:
+        timeline_text = "No visits in the last 12 hours."
+    else:
+        lines = []
+        for v in visits:
+            place = v.get("place_name", "an unknown place")
+            duration = _format_duration_human(v.get("started_at", ""), v.get("ended_at", ""))
+            time_str = _format_time_human(v.get("started_at", ""))
+            lines.append(f"- {time_str}: {place} ({duration})")
+        timeline_text = "\n".join(lines)
+
+    if not EMERGENT_LLM_KEY:
+        # Fallback: return simple summary if LLM key missing
+        if not visits:
+            return {"narrative": "A quiet stretch — no places logged in the last 12 hours."}
+        return {"narrative": f"They visited {len(visits)} place(s) in the last 12 hours."}
+
+    prompt = (
+        f"Here are someone's visits for the last 12 hours:\n{timeline_text}\n\n"
+        "Write 1-2 warm, human, observational sentences about their day. "
+        "Use place names naturally. Don't mention coordinates. "
+        "Speak like someone who genuinely cares about this person. "
+        "If it was a quiet day say so warmly."
+    )
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"narrative-{target_id}-{int(datetime.now().timestamp())}",
+            system_message=(
+                "You are a warm, thoughtful friend who summarizes someone's recent "
+                "movements in 1-2 short observational sentences. Be human, never clinical."
+            ),
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+        response = await chat.send_message(UserMessage(text=prompt))
+        narrative = (response or "").strip()
+        if not narrative:
+            narrative = "A quiet day so far."
+        return {"narrative": narrative}
+    except Exception as e:
+        logger.warning(f"Narrative generation failed: {e}")
+        if not visits:
+            return {"narrative": "A quiet stretch — no places logged recently."}
+        return {"narrative": f"Visited {len(visits)} place(s) over the past 12 hours."}
 
 
 # Mount router
