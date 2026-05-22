@@ -90,6 +90,11 @@ export async function getLatestLocation(user_id?: string) {
   return data;
 }
 
+export async function getDayNarrative(user_id: string) {
+  const { data } = await api.get(`/locations/narrative/${user_id}`);
+  return data;
+}
+
 export async function getRecentLocations(user_id?: string) {
   const { data } = await api.get('/locations/recent', { params: user_id ? { user_id } : {} });
   return data;

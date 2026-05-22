@@ -558,6 +558,12 @@ async def get_day_narrative(
     """Generate a warm, human, AI narrative of the last 12 hours of visits."""
     target_id = user_id
 
+    # Fetch the target user's display name (so we can reference them by name in the prompt)
+    target_user = await users_col.find_one({"id": target_id}, {"_id": 0, "display_name": 1})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    target_name = target_user.get("display_name", "They")
+
     # Auth + scope check (same pattern as timeline)
     if target_id != current_user["id"]:
         pair = pair_key(current_user["id"], target_id)
@@ -566,7 +572,7 @@ async def get_day_narrative(
             raise HTTPException(status_code=403, detail="Not friends")
         their_scope = f.get(f"scope_{target_id}", "10m")
         if their_scope == "off":
-            return {"narrative": "They've paused sharing for now."}
+            return {"narrative": f"{target_name} has sharing turned off right now."}
         max_age_min = SCOPE_TO_MINUTES[their_scope]
         cutoff_scope = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
         time_filter = {"ended_at": {"$lte": cutoff_scope.isoformat()}}
@@ -597,20 +603,22 @@ async def get_day_narrative(
             lines.append(f"- {time_str}: {place} ({duration})")
         timeline_text = "\n".join(lines)
 
+    is_self = target_id == current_user["id"]
+
     if not EMERGENT_LLM_KEY:
-        # Fallback: return simple summary if LLM key missing
         if not visits:
-            return {"narrative": "A quiet stretch — no places logged in the last 12 hours."}
-        return {"narrative": f"They visited {len(visits)} place(s) in the last 12 hours."}
+            return {"narrative": f"Nothing logged from {target_name} in the last 12 hours."}
+        return {"narrative": f"{target_name} has been moving around — {len(visits)} stop(s) in the last 12 hours."}
 
     prompt = (
-        f"Write 1-2 sentences about this person's last 12 hours based on their visits:\n"
+        f"Write 1-2 sentences about {target_name}'s last 12 hours based on these visits:\n"
         f"{timeline_text}\n\n"
-        "Be specific about where they were and how long. "
-        "Sound like a close friend observing their day, not a narrator. "
-        "Be warm but direct. No em dashes. "
-        "No filler phrases like 'sounds like' or 'keeping things low-key'. "
-        "If they barely moved say that simply. Use the actual place names."
+        f"Be specific about where {target_name} was and how long. "
+        f"Sound like a close friend observing {target_name}'s day, not a narrator. "
+        f"Be warm but direct. No em dashes. "
+        f"No filler phrases like 'sounds like' or 'keeping things low-key'. "
+        f"If {target_name} barely moved, say that simply. Use the actual place names. "
+        f"Always refer to the person by name ({target_name}). Never use pronouns like 'he', 'she', 'they', or 'you'."
     )
 
     try:
@@ -620,23 +628,24 @@ async def get_day_narrative(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"narrative-{target_id}-{int(datetime.now().timestamp())}",
             system_message=(
-                "You write 1-2 sentence observations about someone's day based on their location visits. "
-                "You sound like a close friend, not a narrator. Direct and warm. "
-                "No em dashes, no filler phrases, no padding. Use actual place names. "
-                "If they barely moved, say it simply."
+                f"You write 1-2 sentence observations about {target_name}'s day based on location visits. "
+                f"Always refer to {target_name} by name. Never use pronouns. "
+                f"You sound like a close friend, not a narrator. Direct and warm. "
+                f"No em dashes, no filler phrases, no padding. Use actual place names. "
+                f"If {target_name} barely moved, say it simply."
             ),
         ).with_model("anthropic", "claude-sonnet-4-5-20250929")
 
         response = await chat.send_message(UserMessage(text=prompt))
         narrative = (response or "").strip()
         if not narrative:
-            narrative = "A quiet day so far."
+            narrative = f"Quiet day so far for {target_name}."
         return {"narrative": narrative}
     except Exception as e:
         logger.warning(f"Narrative generation failed: {e}")
         if not visits:
-            return {"narrative": "A quiet stretch — no places logged recently."}
-        return {"narrative": f"Visited {len(visits)} place(s) over the past 12 hours."}
+            return {"narrative": f"Nothing logged from {target_name} in the last 12 hours."}
+        return {"narrative": f"{target_name} has been moving around — {len(visits)} stop(s) in the last 12 hours."}
 
 
 # Mount router

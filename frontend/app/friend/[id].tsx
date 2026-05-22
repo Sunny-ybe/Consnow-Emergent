@@ -10,11 +10,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ChevronLeft, MapPin } from 'lucide-react-native';
+import { ChevronLeft, MapPin, Sparkles } from 'lucide-react-native';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import { Avatar } from '@/src/Avatar';
 import { SnapSlider } from '@/src/SnapSlider';
-import { getTimeline, listFriends, updateScope } from '@/src/api';
+import { getTimeline, listFriends, updateScope, getDayNarrative } from '@/src/api';
 import { formatTimeAgo } from '../(tabs)/index';
 
 const SCOPES = ['10m', '1h', '6h', '12h', '24h', 'off'];
@@ -35,6 +35,8 @@ export default function FriendDetailScreen() {
   const [scope, setScope] = useState<string>('10m');
   const [theirScope, setTheirScope] = useState<string>('10m');
   const [visits, setVisits] = useState<any[]>([]);
+  const [narrative, setNarrative] = useState<string>('');
+  const [narrativeLoading, setNarrativeLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -57,9 +59,22 @@ export default function FriendDetailScreen() {
     }
   }, [id]);
 
+  const loadNarrative = useCallback(async () => {
+    setNarrativeLoading(true);
+    try {
+      const n = await getDayNarrative(id);
+      setNarrative(n.narrative || '');
+    } catch {
+      setNarrative('');
+    } finally {
+      setNarrativeLoading(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadNarrative();
+  }, [load, loadNarrative]);
 
   const onSelectScope = async (s: string) => {
     if (saving || s === scope) return;
@@ -116,6 +131,23 @@ export default function FriendDetailScreen() {
               </Text>
             </View>
           ) : null}
+        </View>
+
+        <View style={styles.narrativeCard}>
+          <View style={styles.narrativeHeader}>
+            <Sparkles size={14} color={colors.brand} strokeWidth={2.4} />
+            <Text style={styles.narrativeLabel}>Last 12 hours</Text>
+          </View>
+          {narrativeLoading ? (
+            <View style={styles.narrativeLoadingRow}>
+              <ActivityIndicator size="small" color={colors.textSecondary} />
+              <Text style={styles.narrativeLoadingText}>Reading the day…</Text>
+            </View>
+          ) : (
+            <Text style={styles.narrativeText} testID="friend-narrative">
+              {narrative || 'No story yet.'}
+            </Text>
+          )}
         </View>
 
         <Text style={styles.sectionHeader}>What you share with them</Text>
@@ -210,6 +242,29 @@ const styles = StyleSheet.create({
   username: { ...typography.body, color: colors.textSecondary },
   lastSeenRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm, maxWidth: '90%' },
   lastSeen: { ...typography.caption, color: colors.textSecondary, flexShrink: 1 },
+  narrativeCard: {
+    backgroundColor: colors.accentMuted,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  narrativeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  narrativeLabel: {
+    ...typography.overline,
+    color: colors.brand,
+  },
+  narrativeText: {
+    ...typography.bodyLarge,
+    color: colors.textPrimary,
+    lineHeight: 24,
+  },
+  narrativeLoadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  narrativeLoadingText: { ...typography.body, color: colors.textSecondary },
   sectionHeader: { ...typography.overline, color: colors.textSecondary, marginTop: spacing.lg, marginBottom: spacing.sm },
   scopeCard: {
     backgroundColor: colors.bgSecondary,
