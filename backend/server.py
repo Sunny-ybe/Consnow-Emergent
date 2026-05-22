@@ -604,11 +604,13 @@ async def get_day_narrative(
         return {"narrative": f"They visited {len(visits)} place(s) in the last 12 hours."}
 
     prompt = (
-        f"Here are someone's visits for the last 12 hours:\n{timeline_text}\n\n"
-        "Write 1-2 warm, human, observational sentences about their day. "
-        "Use place names naturally. Don't mention coordinates. "
-        "Speak like someone who genuinely cares about this person. "
-        "If it was a quiet day say so warmly."
+        f"Write 1-2 sentences about this person's last 12 hours based on their visits:\n"
+        f"{timeline_text}\n\n"
+        "Be specific about where they were and how long. "
+        "Sound like a close friend observing their day, not a narrator. "
+        "Be warm but direct. No em dashes. "
+        "No filler phrases like 'sounds like' or 'keeping things low-key'. "
+        "If they barely moved say that simply. Use the actual place names."
     )
 
     try:
@@ -618,8 +620,10 @@ async def get_day_narrative(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"narrative-{target_id}-{int(datetime.now().timestamp())}",
             system_message=(
-                "You are a warm, thoughtful friend who summarizes someone's recent "
-                "movements in 1-2 short observational sentences. Be human, never clinical."
+                "You write 1-2 sentence observations about someone's day based on their location visits. "
+                "You sound like a close friend, not a narrator. Direct and warm. "
+                "No em dashes, no filler phrases, no padding. Use actual place names. "
+                "If they barely moved, say it simply."
             ),
         ).with_model("anthropic", "claude-sonnet-4-5-20250929")
 
