@@ -13,6 +13,7 @@ import { Search, Check, X, ChevronRight, UserPlus } from 'lucide-react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import { Avatar } from '@/src/Avatar';
+import { AvailabilityBadge } from '@/src/AvailabilityBadge';
 import { listFriends, respondToRequest } from '@/src/api';
 import { formatTimeAgo } from './index';
 
@@ -163,6 +164,17 @@ export default function FriendsScreen() {
                     ? `${p.last_seen.place_name} · ${formatTimeAgo(p.last_seen.timestamp)}`
                     : `@${p.user.username}`}
                 </Text>
+                {p.last_seen?.availability ? (
+                  <View style={{ marginTop: 6 }}>
+                    <AvailabilityBadge
+                      testID={`friend-avail-${p.user.id}`}
+                      availability={p.last_seen.availability}
+                      activity={p.last_seen.activity}
+                      showActivity
+                      size="sm"
+                    />
+                  </View>
+                ) : null}
               </View>
               <View style={styles.scopePill}>
                 <Text style={styles.scopePillText}>{p.scope_i_grant}</Text>

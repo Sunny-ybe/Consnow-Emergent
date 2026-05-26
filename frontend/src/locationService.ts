@@ -3,6 +3,7 @@ import * as TaskManager from 'expo-task-manager';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { api, loadAuthToken } from './api';
+import { detectActivityFromLocation } from './activityService';
 
 // True when running inside Expo Go (which restricts background location)
 export const isExpoGo = Constants.executionEnvironment === 'storeClient';
@@ -39,10 +40,14 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK_NAME)) {
 
     for (const loc of locations) {
       try {
+        const { activity, availability, speed_mps } = detectActivityFromLocation(loc);
         await api.post('/locations/ping', {
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
           accuracy: loc.coords.accuracy,
+          speed: speed_mps,
+          activity,
+          availability,
         });
       } catch (e) {
         console.warn('BG ping fail:', e);

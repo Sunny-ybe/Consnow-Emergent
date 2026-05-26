@@ -13,6 +13,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronLeft, MapPin, Sparkles } from 'lucide-react-native';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import { Avatar } from '@/src/Avatar';
+import { AvailabilityBadge } from '@/src/AvailabilityBadge';
 import { SnapSlider } from '@/src/SnapSlider';
 import { getTimeline, listFriends, updateScope, getDayNarrative } from '@/src/api';
 import { formatTimeAgo } from '../(tabs)/index';
@@ -129,6 +130,17 @@ export default function FriendDetailScreen() {
               <Text style={styles.lastSeen} numberOfLines={1}>
                 {friend.last_seen.place_name} · {formatTimeAgo(friend.last_seen.timestamp)}
               </Text>
+            </View>
+          ) : null}
+          {friend.last_seen?.availability ? (
+            <View style={{ marginTop: spacing.sm }}>
+              <AvailabilityBadge
+                testID="friend-detail-availability"
+                availability={friend.last_seen.availability}
+                activity={friend.last_seen.activity}
+                showActivity
+                size="md"
+              />
             </View>
           ) : null}
         </View>

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,14 @@ import {
   TouchableOpacity,
   Alert,
   Platform,
-  ActivityIndicator,
   ScrollView,
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { MapPin, Navigation, Power, Loader } from 'lucide-react-native';
+import { MapPin, Power, Loader, Activity } from 'lucide-react-native';
 import { useFocusEffect } from 'expo-router';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import {
-  getCurrentLocation,
   requestForegroundPermission,
   requestBackgroundPermission,
   startBackgroundTracking,
@@ -24,14 +22,14 @@ import {
   backgroundTrackingUnsupported,
   backgroundUnsupportedReason,
 } from '@/src/locationService';
-import { pingLocation, getLatestLocation } from '@/src/api';
+import { getLatestLocation } from '@/src/api';
 import { useAuth } from '@/src/auth';
+import { AvailabilityBadge } from '@/src/AvailabilityBadge';
 
 export default function MapTabScreen() {
   const { user } = useAuth();
   const [latest, setLatest] = useState<any>(null);
   const [tracking, setTracking] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadLatest = useCallback(async () => {
@@ -61,29 +59,6 @@ export default function MapTabScreen() {
     setRefreshing(false);
   }, [loadLatest]);
 
-  const sendNow = async () => {
-    setBusy(true);
-    try {
-      const granted = await requestForegroundPermission();
-      if (!granted) {
-        Alert.alert('Permission needed', 'Enable location permission to share with friends.');
-        return;
-      }
-      const loc = await getCurrentLocation();
-      if (!loc) {
-        Alert.alert('Could not get location', 'Please try again.');
-        return;
-      }
-      const res = await pingLocation(loc.coords.latitude, loc.coords.longitude, loc.coords.accuracy ?? undefined);
-      Alert.alert('Pinged!', `You are at ${res.place_name}`);
-      await loadLatest();
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to send location');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const toggleBackground = async () => {
     if (backgroundTrackingUnsupported) {
       Alert.alert('Not available here', backgroundUnsupportedReason());
@@ -92,7 +67,7 @@ export default function MapTabScreen() {
     if (tracking) {
       await stopBackgroundTracking();
       setTracking(false);
-      Alert.alert('Background sharing off', 'You can re-enable anytime.');
+      Alert.alert('Sharing paused', 'You can re-enable anytime.');
     } else {
       const fg = await requestForegroundPermission();
       if (!fg) {
@@ -104,7 +79,7 @@ export default function MapTabScreen() {
         if (!bg) {
           Alert.alert(
             'Allow Always',
-            'Background tracking requires "Always Allow" location permission. You can change this in Settings.',
+            'Background sharing requires "Always Allow" location permission. You can change this in Settings.',
           );
           return;
         }
@@ -112,7 +87,7 @@ export default function MapTabScreen() {
       const ok = await startBackgroundTracking();
       if (ok) {
         setTracking(true);
-        Alert.alert('Background sharing on', 'We will quietly update your friends as you move.');
+        Alert.alert('Sharing on', 'Your friends will be quietly updated as you move.');
       } else {
         Alert.alert('Could not start', backgroundUnsupportedReason() || 'Please retry.');
       }
@@ -144,50 +119,48 @@ export default function MapTabScreen() {
                   {latest.formatted_address}
                 </Text>
               ) : null}
-              <Text style={styles.timeAgo}>{formatTimeAgo(latest.timestamp)}</Text>
+              <View style={styles.metaRow}>
+                <Text style={styles.timeAgo}>{formatTimeAgo(latest.timestamp)}</Text>
+                {latest.availability && (
+                  <AvailabilityBadge
+                    testID="self-availability-badge"
+                    availability={latest.availability}
+                    activity={latest.activity}
+                    showActivity
+                    size="sm"
+                  />
+                )}
+              </View>
             </>
           ) : (
             <>
               <Text style={styles.placeName}>No location yet</Text>
-              <Text style={styles.address}>Tap "Ping now" to share your first location.</Text>
+              <Text style={styles.address}>Turn on sharing below so friends can see where you are.</Text>
             </>
           )}
         </View>
 
         <TouchableOpacity
-          testID="ping-now-button"
-          style={[styles.primaryBtn, busy && { opacity: 0.6 }]}
-          onPress={sendNow}
-          disabled={busy}
-          activeOpacity={0.85}
-        >
-          {busy ? (
-            <ActivityIndicator color={colors.textInverse} />
-          ) : (
-            <>
-              <Navigation size={20} color={colors.textInverse} strokeWidth={2.4} />
-              <Text style={styles.primaryBtnText}>Ping now</Text>
-            </>
-          )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
           testID="toggle-background-button"
           style={[
-            styles.secondaryBtn,
-            tracking && styles.secondaryBtnActive,
-            backgroundTrackingUnsupported && styles.secondaryBtnDisabled,
+            styles.primaryBtn,
+            tracking && styles.primaryBtnActive,
+            backgroundTrackingUnsupported && styles.primaryBtnDisabled,
           ]}
           onPress={toggleBackground}
           activeOpacity={0.85}
         >
-          <Power size={18} color={tracking ? colors.success : colors.textPrimary} strokeWidth={2.4} />
-          <Text style={[styles.secondaryBtnText, tracking && { color: colors.success }]}>
+          <Power
+            size={20}
+            color={tracking ? colors.textInverse : colors.textInverse}
+            strokeWidth={2.4}
+          />
+          <Text style={styles.primaryBtnText}>
             {backgroundTrackingUnsupported
-              ? 'Background sharing (Expo Go: unavailable)'
+              ? 'Sharing (Expo Go: unavailable)'
               : tracking
-              ? 'Background sharing: ON'
-              : 'Turn on background sharing'}
+              ? 'Sharing is ON'
+              : 'Turn on sharing'}
           </Text>
         </TouchableOpacity>
 
@@ -198,7 +171,15 @@ export default function MapTabScreen() {
         <View style={styles.infoCard}>
           <Loader size={18} color={colors.textSecondary} strokeWidth={2} />
           <Text style={styles.infoText}>
-            Battery-friendly: we only update when you move 50+ meters, max every 10 minutes.
+            Battery-friendly: only updates when you move 50+ meters, max every 10 minutes.
+          </Text>
+        </View>
+
+        <View style={styles.infoCard}>
+          <Activity size={18} color={colors.textSecondary} strokeWidth={2} />
+          <Text style={styles.infoText}>
+            Friends also see if you're available, busy, or maybe — based on activity (still, walking,
+            cycling, driving).
           </Text>
         </View>
       </ScrollView>
@@ -240,6 +221,7 @@ const styles = StyleSheet.create({
   },
   placeName: { ...typography.h2, color: colors.textPrimary, marginBottom: 4 },
   address: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.sm },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
   timeAgo: { ...typography.caption, color: colors.textTertiary },
   primaryBtn: {
     backgroundColor: colors.brand,
@@ -252,22 +234,9 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     ...shadow.card,
   },
+  primaryBtnActive: { backgroundColor: colors.success },
+  primaryBtnDisabled: { opacity: 0.7 },
   primaryBtnText: { color: colors.textInverse, fontSize: 17, fontWeight: '600' },
-  secondaryBtn: {
-    backgroundColor: colors.bgSecondary,
-    borderWidth: 1,
-    borderColor: colors.border,
-    height: 52,
-    borderRadius: radius.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: spacing.sm,
-  },
-  secondaryBtnActive: { borderColor: colors.success, backgroundColor: '#ECFFF1' },
-  secondaryBtnDisabled: { opacity: 0.7 },
-  secondaryBtnText: { color: colors.textPrimary, fontSize: 15, fontWeight: '600' },
   unsupportedHint: {
     ...typography.caption,
     color: colors.warning,
@@ -281,7 +250,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgTertiary,
     padding: spacing.md,
     borderRadius: radius.md,
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
     alignItems: 'flex-start',
   },
   infoText: { ...typography.caption, color: colors.textSecondary, flex: 1, lineHeight: 18 },

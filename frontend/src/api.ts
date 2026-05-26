@@ -75,8 +75,19 @@ export async function updateScope(friend_user_id: string, scope: string) {
   return data;
 }
 
-export async function pingLocation(latitude: number, longitude: number, accuracy?: number) {
-  const { data } = await api.post('/locations/ping', { latitude, longitude, accuracy });
+export async function pingLocation(
+  latitude: number,
+  longitude: number,
+  extras?: { accuracy?: number; speed?: number | null; activity?: string; availability?: string },
+) {
+  const { data } = await api.post('/locations/ping', {
+    latitude,
+    longitude,
+    accuracy: extras?.accuracy,
+    speed: extras?.speed ?? null,
+    activity: extras?.activity,
+    availability: extras?.availability,
+  });
   return data;
 }
 

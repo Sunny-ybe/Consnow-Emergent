@@ -91,6 +91,9 @@ class LocationPing(BaseModel):
     latitude: float
     longitude: float
     accuracy: Optional[float] = None
+    speed: Optional[float] = None  # m/s
+    activity: Optional[str] = None  # stationary|walking|running|cycling|automotive|unknown
+    availability: Optional[str] = None  # available|maybe|busy
     timestamp: Optional[str] = None  # ISO; defaults to now
 
 
@@ -336,6 +339,8 @@ async def list_friends(current_user: dict = Depends(get_current_user)):
                 entry["last_seen"] = {
                     "place_name": last.get("place_name"),
                     "timestamp": last.get("timestamp"),
+                    "activity": last.get("activity"),
+                    "availability": last.get("availability"),
                 }
             friends.append(entry)
         elif f["status"] == "pending":
@@ -381,6 +386,9 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
         "latitude": ping.latitude,
         "longitude": ping.longitude,
         "accuracy": ping.accuracy,
+        "speed": ping.speed,
+        "activity": ping.activity or "unknown",
+        "availability": ping.availability or "available",
         "timestamp": now_iso,
         **geo,
     }
@@ -408,6 +416,8 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
                     "place_name": geo["place_name"],  # refresh if changed
                     "last_lat": ping.latitude,
                     "last_lng": ping.longitude,
+                    "activity": ping.activity or last_visit.get("activity", "unknown"),
+                    "availability": ping.availability or last_visit.get("availability", "available"),
                 }
             },
         )
@@ -423,6 +433,8 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
             "formatted_address": geo.get("formatted_address"),
             "neighborhood": geo.get("neighborhood"),
             "city": geo.get("city"),
+            "activity": ping.activity or "unknown",
+            "availability": ping.availability or "available",
             "started_at": now_iso,
             "ended_at": now_iso,
         }
