@@ -7,39 +7,49 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ChevronLeft, MapPin, Sparkles } from 'lucide-react-native';
+import { ChevronLeft, MapPin, Sparkles, Clock, Calendar } from 'lucide-react-native';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import { Avatar } from '@/src/Avatar';
 import { AvailabilityBadge } from '@/src/AvailabilityBadge';
 import { SnapSlider } from '@/src/SnapSlider';
-import { getTimeline, listFriends, updateScope, getDayNarrative } from '@/src/api';
+import { RangeSlider } from '@/src/RangeSlider';
+import { getTimeline, listFriends, updateSharing, getDayNarrative } from '@/src/api';
 import { formatTimeAgo } from '../(tabs)/index';
 
-const SCOPES = ['10m', '1h', '6h', '12h', '24h', 'off'];
-const SCOPE_LABELS_SHORT = ['10m', '1h', '6h', '12h', '24h', 'Off'];
-const SCOPE_LABELS: Record<string, string> = {
+const FREQS = ['10m', '30m', '1h', '6h', '12h', '24h'];
+const FREQ_LABELS_SHORT = ['10m', '30m', '1h', '6h', '12h', '24h'];
+const FREQ_LABELS: Record<string, string> = {
   '10m': '10 min',
+  '30m': '30 min',
   '1h': '1 hour',
   '6h': '6 hours',
   '12h': '12 hours',
   '24h': '24 hours',
-  off: 'Off',
 };
+
+function formatHour(h: number): string {
+  if (h === 0 || h === 24) return '12am';
+  if (h === 12) return '12pm';
+  if (h < 12) return `${h}am`;
+  return `${h - 12}pm`;
+}
 
 export default function FriendDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [friend, setFriend] = useState<any>(null);
-  const [scope, setScope] = useState<string>('10m');
-  const [theirScope, setTheirScope] = useState<string>('10m');
+  const [enabled, setEnabled] = useState(true);
+  const [freq, setFreq] = useState<string>('10m');
+  const [winStart, setWinStart] = useState(0);
+  const [winEnd, setWinEnd] = useState(24);
   const [visits, setVisits] = useState<any[]>([]);
   const [narrative, setNarrative] = useState<string>('');
   const [narrativeLoading, setNarrativeLoading] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,8 +58,11 @@ export default function FriendDetailScreen() {
       const f = d.friends.find((x: any) => x.user.id === id);
       if (f) {
         setFriend(f);
-        setScope(f.scope_i_grant);
-        setTheirScope(f.scope_they_grant);
+        const sg = f.sharing_i_grant || {};
+        setEnabled(sg.enabled !== false);
+        setFreq(sg.freq || '10m');
+        setWinStart(typeof sg.window_start === 'number' ? sg.window_start : 0);
+        setWinEnd(typeof sg.window_end === 'number' ? sg.window_end : 24);
       }
       const t = await getTimeline(id);
       setVisits(t.visits || []);
@@ -77,17 +90,36 @@ export default function FriendDetailScreen() {
     loadNarrative();
   }, [load, loadNarrative]);
 
-  const onSelectScope = async (s: string) => {
-    if (saving || s === scope) return;
-    setSaving(true);
-    setScope(s);
+  const persist = async (next: { enabled?: boolean; freq?: string; winStart?: number; winEnd?: number }) => {
+    const e = next.enabled !== undefined ? next.enabled : enabled;
+    const fr = next.freq || freq;
+    const ws = next.winStart !== undefined ? next.winStart : winStart;
+    const we = next.winEnd !== undefined ? next.winEnd : winEnd;
     try {
-      await updateScope(id, s);
-    } catch (e: any) {
-      Alert.alert('Could not update', e?.response?.data?.detail || 'Try again');
-    } finally {
-      setSaving(false);
+      await updateSharing(id, e, fr, ws, we);
+    } catch (err: any) {
+      Alert.alert('Could not save', err?.response?.data?.detail || 'Try again');
     }
+  };
+
+  const onToggle = (v: boolean) => {
+    setEnabled(v);
+    persist({ enabled: v });
+  };
+  const onFreq = (f: string) => {
+    setFreq(f);
+    persist({ freq: f });
+  };
+  const onWindow = (lo: number, hi: number) => {
+    setWinStart(lo);
+    setWinEnd(hi);
+  };
+  // Persist window on release (cheap: persist every change since RangeSlider already throttles via snapping)
+  // We persist on every snap change directly here:
+  const onWindowChange = (lo: number, hi: number) => {
+    const changed = lo !== winStart || hi !== winEnd;
+    onWindow(lo, hi);
+    if (changed) persist({ winStart: lo, winEnd: hi });
   };
 
   if (loading) {
@@ -108,6 +140,8 @@ export default function FriendDetailScreen() {
       </SafeAreaView>
     );
   }
+
+  const theirSharing = friend.sharing_they_grant || {};
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -135,7 +169,6 @@ export default function FriendDetailScreen() {
           {friend.last_seen?.availability ? (
             <View style={{ marginTop: spacing.sm }}>
               <AvailabilityBadge
-                testID="friend-detail-availability"
                 availability={friend.last_seen.availability}
                 activity={friend.last_seen.activity}
                 showActivity
@@ -162,41 +195,96 @@ export default function FriendDetailScreen() {
           )}
         </View>
 
-        <Text style={styles.sectionHeader}>What you share with them</Text>
-        <View style={styles.scopeCard}>
-          <Text style={styles.scopeLabel}>
-            Updates every <Text style={{ fontWeight: '800' }}>{SCOPE_LABELS[scope]}</Text>
-          </Text>
-          <SnapSlider
-            testID="scope-slider"
-            steps={SCOPES}
-            labels={SCOPE_LABELS_SHORT}
-            value={scope}
-            onChange={onSelectScope}
+        {/* Master toggle */}
+        <View style={styles.toggleCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.toggleLabel}>Share my location with {friend.user.display_name.split(' ')[0]}</Text>
+            <Text style={styles.toggleHint}>
+              {enabled ? 'Sharing is on.' : 'Sharing is paused for this friend.'}
+            </Text>
+          </View>
+          <Switch
+            testID="sharing-toggle"
+            value={enabled}
+            onValueChange={onToggle}
+            trackColor={{ true: colors.brand, false: colors.border }}
+            thumbColor={'#fff'}
           />
-          <Text style={styles.scopeHint}>
-            {scope === 'off'
-              ? 'They will not see any new location updates from you.'
-              : `They will see your location with a ${SCOPE_LABELS[scope].toLowerCase()} delay.`}
+        </View>
+
+        {/* Time window (2-pointer range slider) */}
+        <View style={[styles.settingCard, !enabled && styles.disabled]} pointerEvents={enabled ? 'auto' : 'none'}>
+          <View style={styles.settingHeader}>
+            <Calendar size={16} color={colors.brand} strokeWidth={2.2} />
+            <Text style={styles.settingLabel}>Time window</Text>
+          </View>
+          <RangeSlider
+            testID="time-window-slider"
+            min={0}
+            max={24}
+            step={1}
+            lo={winStart}
+            hi={winEnd}
+            onChange={onWindowChange}
+            ticks={[0, 6, 12, 18, 24]}
+            formatTick={formatHour}
+            formatValue={formatHour}
+          />
+          <Text style={styles.settingHint}>
+            {friend.user.display_name.split(' ')[0]} can see your location only between these hours.
           </Text>
         </View>
 
+        {/* Frequency (1-pointer snap slider) */}
+        <View style={[styles.settingCard, !enabled && styles.disabled]} pointerEvents={enabled ? 'auto' : 'none'}>
+          <View style={styles.settingHeader}>
+            <Clock size={16} color={colors.brand} strokeWidth={2.2} />
+            <Text style={styles.settingLabel}>Update frequency</Text>
+          </View>
+          <Text style={styles.freqValue}>Every {FREQ_LABELS[freq]}</Text>
+          <SnapSlider
+            testID="freq-slider"
+            steps={FREQS}
+            labels={FREQ_LABELS_SHORT}
+            value={freq}
+            onChange={onFreq}
+          />
+          <Text style={styles.settingHint}>
+            How fresh the data {friend.user.display_name.split(' ')[0]} sees should be.
+          </Text>
+        </View>
+
+        {/* What they share with you (read-only) */}
         <Text style={styles.sectionHeader}>What they share with you</Text>
         <View style={styles.theirCard}>
-          <Text style={styles.theirText}>
-            {theirScope === 'off' ? (
-              <>They have paused sharing with you.</>
-            ) : (
-              <>You see their updates every <Text style={{ fontWeight: '700' }}>{SCOPE_LABELS[theirScope]}</Text>.</>
-            )}
-          </Text>
+          {theirSharing.enabled === false ? (
+            <Text style={styles.theirText}>
+              {friend.user.display_name} has paused sharing with you.
+            </Text>
+          ) : (
+            <Text style={styles.theirText}>
+              You see <Text style={{ fontWeight: '700' }}>{friend.user.display_name}</Text>'s location every{' '}
+              <Text style={{ fontWeight: '700' }}>{FREQ_LABELS[theirSharing.freq] || '10 min'}</Text>
+              {(theirSharing.window_start ?? 0) === 0 && (theirSharing.window_end ?? 24) === 24 ? (
+                <>.</>
+              ) : (
+                <>
+                  {' '}between{' '}
+                  <Text style={{ fontWeight: '700' }}>{formatHour(theirSharing.window_start ?? 0)}</Text>
+                  {' – '}
+                  <Text style={{ fontWeight: '700' }}>{formatHour(theirSharing.window_end ?? 24)}</Text>.
+                </>
+              )}
+            </Text>
+          )}
         </View>
 
+        {/* Recent visits */}
         <Text style={styles.sectionHeader}>Recent places</Text>
         {visits.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.empty}>
-              {theirScope === 'off'
+              {theirSharing.enabled === false
                 ? 'Nothing to show — sharing is off.'
                 : 'No visits visible yet.'}
             </Text>
@@ -260,38 +348,42 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginTop: spacing.md,
   },
-  narrativeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  narrativeLabel: {
-    ...typography.overline,
-    color: colors.brand,
-  },
-  narrativeText: {
-    ...typography.bodyLarge,
-    color: colors.textPrimary,
-    lineHeight: 24,
-  },
+  narrativeHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  narrativeLabel: { ...typography.overline, color: colors.brand },
+  narrativeText: { ...typography.bodyLarge, color: colors.textPrimary, lineHeight: 24 },
   narrativeLoadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   narrativeLoadingText: { ...typography.body, color: colors.textSecondary },
-  sectionHeader: { ...typography.overline, color: colors.textSecondary, marginTop: spacing.lg, marginBottom: spacing.sm },
-  scopeCard: {
+
+  toggleCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: colors.bgSecondary,
     padding: spacing.md,
     borderRadius: radius.lg,
+    marginTop: spacing.lg,
+    gap: spacing.md,
     ...shadow.subtle,
   },
-  scopeLabel: { ...typography.bodyLarge, color: colors.textPrimary, marginBottom: spacing.md },
-  scopeHint: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.sm },
-  theirCard: {
-    backgroundColor: colors.bgTertiary,
+  toggleLabel: { ...typography.h3, color: colors.textPrimary },
+  toggleHint: { ...typography.caption, color: colors.textSecondary, marginTop: 4 },
+
+  settingCard: {
+    backgroundColor: colors.bgSecondary,
     padding: spacing.md,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
+    marginTop: spacing.md,
+    ...shadow.subtle,
   },
-  theirText: { ...typography.body, color: colors.textPrimary },
+  disabled: { opacity: 0.45 },
+  settingHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
+  settingLabel: { ...typography.overline, color: colors.brand },
+  settingHint: { ...typography.caption, color: colors.textSecondary, marginTop: 8 },
+  freqValue: { ...typography.bodyLarge, color: colors.textPrimary, fontWeight: '700', marginBottom: 8 },
+
+  sectionHeader: { ...typography.overline, color: colors.textSecondary, marginTop: spacing.lg, marginBottom: spacing.sm },
+  theirCard: { backgroundColor: colors.bgTertiary, padding: spacing.md, borderRadius: radius.md },
+  theirText: { ...typography.body, color: colors.textPrimary, lineHeight: 22 },
+
   visitCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -303,12 +395,7 @@ const styles = StyleSheet.create({
   },
   placeName: { ...typography.h3, color: colors.textPrimary },
   visitMeta: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
-  emptyCard: {
-    backgroundColor: colors.bgTertiary,
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    alignItems: 'center',
-  },
+  emptyCard: { backgroundColor: colors.bgTertiary, padding: spacing.lg, borderRadius: radius.md, alignItems: 'center' },
   empty: { ...typography.body, color: colors.textSecondary },
   backText: { ...typography.body, color: colors.accent, marginTop: spacing.md, fontWeight: '600' },
 });

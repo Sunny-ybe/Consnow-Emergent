@@ -15,7 +15,11 @@
         "NSLocationWhenInUseUsageDescription": "Share your location with friends you trust",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Update friends about places you visit",
         "NSLocationAlwaysUsageDescription": "Update friends about places you visit",
-        "UIBackgroundModes": ["location", "fetch"]
+        "NSMotionUsageDescription": "Detect if you're walking, cycling, or driving so friends can see your availability",
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
       }
     },
     "android": {
@@ -30,7 +34,9 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "ACTIVITY_RECOGNITION",
+        "com.google.android.gms.permission.ACTIVITY_RECOGNITION"
       ]
     },
     "web": {
@@ -58,7 +64,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#0A0A0A"
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true

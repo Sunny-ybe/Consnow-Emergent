@@ -37,6 +37,36 @@ SCOPE_TO_MINUTES = {
     "off": -1,
 }
 
+# New granular sharing model
+VALID_FREQS = ["10m", "30m", "1h", "6h", "12h", "24h"]
+FREQ_TO_MINUTES = {
+    "10m": 10, "30m": 30, "1h": 60, "6h": 360, "12h": 720, "24h": 1440,
+}
+
+
+def get_sharing_filter(friendship: dict, owner_id: str):
+    """Return either a datetime cutoff (only data ended <= cutoff is visible),
+    or a sentinel string 'BLOCKED' / 'OUTSIDE_WINDOW' if nothing visible."""
+    # New model has precedence
+    if f"freq_{owner_id}" in friendship or f"enabled_{owner_id}" in friendship:
+        enabled = friendship.get(f"enabled_{owner_id}", True)
+        if not enabled:
+            return "BLOCKED"
+        freq = friendship.get(f"freq_{owner_id}", "10m")
+        win_start = int(friendship.get(f"window_start_{owner_id}", 0))
+        win_end = int(friendship.get(f"window_end_{owner_id}", 24))
+        current_hour = datetime.now(timezone.utc).hour
+        if not (win_start <= current_hour < win_end):
+            return "OUTSIDE_WINDOW"
+        delay_min = FREQ_TO_MINUTES.get(freq, 10)
+        return datetime.now(timezone.utc) - timedelta(minutes=delay_min)
+    # Legacy scope_<uid>
+    scope = friendship.get(f"scope_{owner_id}", "10m")
+    if scope == "off":
+        return "BLOCKED"
+    delay_min = SCOPE_TO_MINUTES.get(scope, 10)
+    return datetime.now(timezone.utc) - timedelta(minutes=delay_min)
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -85,6 +115,14 @@ class FriendRespondReq(BaseModel):
 class ScopeUpdateReq(BaseModel):
     friend_user_id: str
     scope: str  # 10m/1h/6h/12h/24h/off
+
+
+class SharingUpdateReq(BaseModel):
+    friend_user_id: str
+    enabled: bool
+    freq: str  # 10m/30m/1h/6h/12h/24h
+    window_start: int = Field(ge=0, le=23)
+    window_end: int = Field(ge=1, le=24)
 
 
 class LocationPing(BaseModel):
@@ -327,8 +365,20 @@ async def list_friends(current_user: dict = Depends(get_current_user)):
             "friendship_id": f["id"],
             "user": other,
             "status": f["status"],
-            "scope_i_grant": f.get(f"scope_{uid}", "10m"),  # what I share with them
-            "scope_they_grant": f.get(f"scope_{other_id}", "10m"),  # what they share with me
+            "scope_i_grant": f.get(f"scope_{uid}", "10m"),  # legacy
+            "scope_they_grant": f.get(f"scope_{other_id}", "10m"),  # legacy
+            "sharing_i_grant": {
+                "enabled": f.get(f"enabled_{uid}", True),
+                "freq": f.get(f"freq_{uid}", "10m"),
+                "window_start": f.get(f"window_start_{uid}", 0),
+                "window_end": f.get(f"window_end_{uid}", 24),
+            },
+            "sharing_they_grant": {
+                "enabled": f.get(f"enabled_{other_id}", True),
+                "freq": f.get(f"freq_{other_id}", "10m"),
+                "window_start": f.get(f"window_start_{other_id}", 0),
+                "window_end": f.get(f"window_end_{other_id}", 24),
+            },
         }
         if f["status"] == "accepted":
             # last seen
@@ -368,6 +418,34 @@ async def update_scope(req: ScopeUpdateReq, current_user: dict = Depends(get_cur
         {"pair": pair}, {"$set": {f"scope_{current_user['id']}": req.scope}}
     )
     return {"ok": True, "scope": req.scope}
+
+
+@api.put("/friends/sharing")
+async def update_sharing(req: SharingUpdateReq, current_user: dict = Depends(get_current_user)):
+    if req.freq not in VALID_FREQS:
+        raise HTTPException(status_code=400, detail="Invalid freq")
+    if req.window_start >= req.window_end:
+        raise HTTPException(status_code=400, detail="Window start must be < end")
+    pair = pair_key(current_user["id"], req.friend_user_id)
+    f = await friendships_col.find_one({"pair": pair})
+    if not f or f["status"] != "accepted":
+        raise HTTPException(status_code=404, detail="Friendship not found")
+    uid = current_user["id"]
+    # Also derive legacy scope_<uid> for backward compat
+    legacy_scope = "off" if not req.enabled else (
+        req.freq if req.freq in VALID_SCOPES else "10m"
+    )
+    await friendships_col.update_one(
+        {"pair": pair},
+        {"$set": {
+            f"enabled_{uid}": req.enabled,
+            f"freq_{uid}": req.freq,
+            f"window_start_{uid}": req.window_start,
+            f"window_end_{uid}": req.window_end,
+            f"scope_{uid}": legacy_scope,
+        }},
+    )
+    return {"ok": True}
 
 
 # ---------- Routes: Location ----------
@@ -449,25 +527,19 @@ async def get_timeline(
     limit: int = 50,
     current_user: dict = Depends(get_current_user),
 ):
-    """Return visits timeline for a user. If user_id is another user, apply scope filter."""
     target_id = user_id or current_user["id"]
-
     if target_id != current_user["id"]:
-        # check friendship + scope they granted me
         pair = pair_key(current_user["id"], target_id)
         f = await friendships_col.find_one({"pair": pair})
         if not f or f["status"] != "accepted":
             raise HTTPException(status_code=403, detail="Not friends")
-        their_scope = f.get(f"scope_{target_id}", "10m")
-        if their_scope == "off":
-            return {"visits": [], "scope": "off"}
-        # Filter to only show visits where ended_at is older than scope minutes ago
-        max_age_min = SCOPE_TO_MINUTES[their_scope]
-        # actually scope means "update frequency" not history limit -
-        # we serve visits that ended at least scope_minutes ago (delay)
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
+        share = get_sharing_filter(f, target_id)
+        if share == "BLOCKED":
+            return {"visits": [], "blocked": True, "reason": "off"}
+        if share == "OUTSIDE_WINDOW":
+            return {"visits": [], "blocked": True, "reason": "window"}
         cursor = visits_col.find(
-            {"user_id": target_id, "ended_at": {"$lte": cutoff.isoformat()}},
+            {"user_id": target_id, "ended_at": {"$lte": share.isoformat()}},
             {"_id": 0},
         ).sort("started_at", -1).limit(limit)
     else:
@@ -490,13 +562,11 @@ async def get_latest_location(
         f = await friendships_col.find_one({"pair": pair})
         if not f or f["status"] != "accepted":
             raise HTTPException(status_code=403, detail="Not friends")
-        their_scope = f.get(f"scope_{target_id}", "10m")
-        if their_scope == "off":
+        share = get_sharing_filter(f, target_id)
+        if share == "BLOCKED" or share == "OUTSIDE_WINDOW":
             return None
-        max_age_min = SCOPE_TO_MINUTES[their_scope]
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_min)
         last = await locations_col.find_one(
-            {"user_id": target_id, "timestamp": {"$lte": cutoff.isoformat()}},
+            {"user_id": target_id, "timestamp": {"$lte": share.isoformat()}},
             {"_id": 0},
             sort=[("timestamp", -1)],
         )

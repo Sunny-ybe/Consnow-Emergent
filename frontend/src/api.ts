@@ -75,6 +75,23 @@ export async function updateScope(friend_user_id: string, scope: string) {
   return data;
 }
 
+export async function updateSharing(
+  friend_user_id: string,
+  enabled: boolean,
+  freq: string,
+  window_start: number,
+  window_end: number,
+) {
+  const { data } = await api.put('/friends/sharing', {
+    friend_user_id,
+    enabled,
+    freq,
+    window_start,
+    window_end,
+  });
+  return data;
+}
+
 export async function pingLocation(
   latitude: number,
   longitude: number,
