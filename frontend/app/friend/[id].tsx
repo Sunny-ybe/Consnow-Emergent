@@ -141,7 +141,7 @@ export default function FriendDetailScreen() {
     );
   }
 
-  const theirSharing = friend.sharing_they_grant || {};
+  const theirSharing: any = {};
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -254,40 +254,14 @@ export default function FriendDetailScreen() {
           </Text>
         </View>
 
-        {/* What they share with you (read-only) */}
-        <Text style={styles.sectionHeader}>What they share with you</Text>
-        <View style={styles.theirCard}>
-          {theirSharing.enabled === false ? (
-            <Text style={styles.theirText}>
-              {friend.user.display_name} has paused sharing with you.
-            </Text>
-          ) : (
-            <Text style={styles.theirText}>
-              You see <Text style={{ fontWeight: '700' }}>{friend.user.display_name}</Text>'s location every{' '}
-              <Text style={{ fontWeight: '700' }}>{FREQ_LABELS[theirSharing.freq] || '10 min'}</Text>
-              {(theirSharing.window_start ?? 0) === 0 && (theirSharing.window_end ?? 24) === 24 ? (
-                <>.</>
-              ) : (
-                <>
-                  {' '}between{' '}
-                  <Text style={{ fontWeight: '700' }}>{formatHour(theirSharing.window_start ?? 0)}</Text>
-                  {' – '}
-                  <Text style={{ fontWeight: '700' }}>{formatHour(theirSharing.window_end ?? 24)}</Text>.
-                </>
-              )}
-            </Text>
-          )}
-        </View>
+        {/* What they share with you (read-only display) */}
+        {/* Removed: receiver doesn't see what the friend has configured. Privacy stays one-directional. */}
 
         {/* Recent visits */}
         <Text style={styles.sectionHeader}>Recent places</Text>
         {visits.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Text style={styles.empty}>
-              {theirSharing.enabled === false
-                ? 'Nothing to show — sharing is off.'
-                : 'No visits visible yet.'}
-            </Text>
+            <Text style={styles.empty}>No visits visible yet.</Text>
           </View>
         ) : (
           visits.slice(0, 10).map((v) => (

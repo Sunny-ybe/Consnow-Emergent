@@ -366,18 +366,11 @@ async def list_friends(current_user: dict = Depends(get_current_user)):
             "user": other,
             "status": f["status"],
             "scope_i_grant": f.get(f"scope_{uid}", "10m"),  # legacy
-            "scope_they_grant": f.get(f"scope_{other_id}", "10m"),  # legacy
             "sharing_i_grant": {
                 "enabled": f.get(f"enabled_{uid}", True),
                 "freq": f.get(f"freq_{uid}", "10m"),
                 "window_start": f.get(f"window_start_{uid}", 0),
                 "window_end": f.get(f"window_end_{uid}", 24),
-            },
-            "sharing_they_grant": {
-                "enabled": f.get(f"enabled_{other_id}", True),
-                "freq": f.get(f"freq_{other_id}", "10m"),
-                "window_start": f.get(f"window_start_{other_id}", 0),
-                "window_end": f.get(f"window_end_{other_id}", 24),
             },
         }
         if f["status"] == "accepted":
