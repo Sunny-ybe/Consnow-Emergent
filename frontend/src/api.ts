@@ -3,10 +3,23 @@ import { storage } from '@/src/utils/storage';
 
 const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
+// Defensive: warn loudly if env var didn't get baked into the build
+if (!BASE_URL) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[Consnow] EXPO_PUBLIC_BACKEND_URL is not set! Network calls will fail. ' +
+    'If you see this in a TestFlight build, rebuild with eas build --clear-cache.',
+  );
+}
+
 export const api = axios.create({
   baseURL: `${BASE_URL}/api`,
   timeout: 15000,
 });
+
+// Log the baked-in URL once at startup so we can verify from device logs
+// eslint-disable-next-line no-console
+console.log('[Consnow] API base URL:', api.defaults.baseURL);
 
 const TOKEN_KEY = 'consnow_auth_token';
 
