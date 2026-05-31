@@ -43,7 +43,24 @@ export default function SignupScreen() {
       });
       router.replace('/(tabs)');
     } catch (e: any) {
-      Alert.alert('Sign up failed', e?.response?.data?.detail || e.message || 'Try again');
+      const detail = e?.response?.data?.detail;
+      const status = e?.response?.status;
+      let title = 'Sign up failed';
+      let body = detail || e.message || 'Please try again.';
+
+      if (detail) {
+        // Show the real reason as the title for clarity
+        title = detail;
+        body = 'Please adjust and try again.';
+      } else if (!e?.response) {
+        // No response = real network problem
+        title = 'Network error';
+        body = 'Could not reach the server. Check your connection and try again.';
+      } else if (status) {
+        title = `Sign up failed (${status})`;
+      }
+
+      Alert.alert(title, body);
     } finally {
       setBusy(false);
     }

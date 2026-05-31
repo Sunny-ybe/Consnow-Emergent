@@ -33,7 +33,22 @@ export default function LoginScreen() {
       await login(email.trim(), password);
       router.replace('/(tabs)');
     } catch (e: any) {
-      Alert.alert('Login failed', e?.response?.data?.detail || e.message || 'Try again');
+      const detail = e?.response?.data?.detail;
+      const status = e?.response?.status;
+      let title = 'Login failed';
+      let body = detail || e.message || 'Please try again.';
+
+      if (detail) {
+        title = detail;
+        body = 'Please check and try again.';
+      } else if (!e?.response) {
+        title = 'Network error';
+        body = 'Could not reach the server. Check your connection and try again.';
+      } else if (status) {
+        title = `Login failed (${status})`;
+      }
+
+      Alert.alert(title, body);
     } finally {
       setBusy(false);
     }
