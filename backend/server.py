@@ -697,22 +697,21 @@ async def get_day_narrative(
     )
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"narrative-{target_id}-{int(datetime.now().timestamp())}",
-            system_message=(
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            system=(
                 f"You write 1-2 sentence observations about {target_name}'s day based on location visits. "
                 f"Always refer to {target_name} by name. Never use pronouns. "
                 f"You sound like a close friend, not a narrator. Direct and warm. "
                 f"No em dashes, no filler phrases, no padding. Use actual place names. "
                 f"If {target_name} barely moved, say it simply."
             ),
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
-        response = await chat.send_message(UserMessage(text=prompt))
-        narrative = (response or "").strip()
+            messages=[{"role": "user", "content": prompt}]
+        )
+        narrative = (message.content[0].text or "").strip()
         if not narrative:
             narrative = f"Quiet day so far for {target_name}."
         return {"narrative": narrative}
