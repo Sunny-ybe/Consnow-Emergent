@@ -217,15 +217,23 @@ async def reverse_geocode(lat: float, lng: float) -> dict:
             )
             place_name = best.get("displayName", {}).get("text") or f"{lat:.4f}, {lng:.4f}"
             formatted = best.get("formattedAddress", "")
+            # Pick the most specific type as the category, skipping geo and generic types
+            _GENERIC_TYPES = {"establishment", "point_of_interest", "premise"}
+            specific = [
+                t for t in best.get("types", [])
+                if t not in _GEO_TYPES and t not in _GENERIC_TYPES
+            ]
+            place_category = specific[0] if specific else None
             return {
                 "place_name": place_name,
                 "formatted_address": formatted,
                 "neighborhood": None,
                 "city": None,
+                "place_category": place_category,
             }
     except Exception as e:
         logger.warning(f"Places lookup failed: {e}")
-        return {"place_name": f"{lat:.4f}, {lng:.4f}", "neighborhood": None, "city": None}
+        return {"place_name": f"{lat:.4f}, {lng:.4f}", "neighborhood": None, "city": None, "place_category": None}
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -508,6 +516,7 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
                 "$set": {
                     "ended_at": now_iso,
                     "place_name": geo["place_name"],  # refresh if changed
+                    "place_category": geo.get("place_category"),
                     "last_lat": ping.latitude,
                     "last_lng": ping.longitude,
                     "activity": ping.activity or last_visit.get("activity", "unknown"),
@@ -524,6 +533,7 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
             "last_lat": ping.latitude,
             "last_lng": ping.longitude,
             "place_name": geo["place_name"],
+            "place_category": geo.get("place_category"),
             "formatted_address": geo.get("formatted_address"),
             "neighborhood": geo.get("neighborhood"),
             "city": geo.get("city"),
@@ -561,17 +571,52 @@ async def get_timeline(
     else:
         cursor = visits_col.find({"user_id": target_id}, {"_id": 0}).sort("started_at", -1).limit(limit)
 
+    # Collect and filter visits (cursor is DESC; prev_lat/prev_lng tracks the later visit)
     visits = []
+    prev_lat = prev_lng = None
     async for v in cursor:
+        short = False
         try:
             s = datetime.fromisoformat(v["started_at"].replace("Z", "+00:00"))
             e = datetime.fromisoformat(v["ended_at"].replace("Z", "+00:00"))
-            if (e - s).total_seconds() < 300:
-                continue
+            short = (e - s).total_seconds() < 300
         except Exception:
             pass
+        if short and prev_lat is not None:
+            if haversine_m(prev_lat, prev_lng, v["center_lat"], v["center_lng"]) <= 50:
+                continue
         visits.append(v)
-    return {"visits": visits}
+        prev_lat = v.get("center_lat")
+        prev_lng = v.get("center_lng")
+
+    # Reverse to chronological order, then interleave transport segments
+    visits.reverse()
+    items = []
+    for i, v in enumerate(visits):
+        items.append({**v, "type": "visit"})
+        if i < len(visits) - 1:
+            nxt = visits[i + 1]
+            try:
+                end_t = datetime.fromisoformat(v["ended_at"].replace("Z", "+00:00"))
+                start_t = datetime.fromisoformat(nxt["started_at"].replace("Z", "+00:00"))
+                duration_s = max(0, int((start_t - end_t).total_seconds()))
+                dist_m = round(haversine_m(
+                    v.get("last_lat", v["center_lat"]),
+                    v.get("last_lng", v["center_lng"]),
+                    nxt["center_lat"],
+                    nxt["center_lng"],
+                ))
+                items.append({
+                    "type": "transport",
+                    "duration": duration_s,
+                    "distance_m": dist_m,
+                    "from_place": v.get("place_name"),
+                    "to_place": nxt.get("place_name"),
+                })
+            except Exception:
+                pass
+
+    return {"visits": items}
 
 
 @api.get("/locations/latest")
