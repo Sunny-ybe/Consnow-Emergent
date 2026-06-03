@@ -616,6 +616,7 @@ async def get_timeline(
             except Exception:
                 pass
 
+    items.reverse()
     return {"visits": items}
 
 
