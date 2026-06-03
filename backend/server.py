@@ -563,6 +563,13 @@ async def get_timeline(
 
     visits = []
     async for v in cursor:
+        try:
+            s = datetime.fromisoformat(v["started_at"].replace("Z", "+00:00"))
+            e = datetime.fromisoformat(v["ended_at"].replace("Z", "+00:00"))
+            if (e - s).total_seconds() < 300:
+                continue
+        except Exception:
+            pass
         visits.append(v)
     return {"visits": visits}
 
