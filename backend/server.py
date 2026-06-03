@@ -485,17 +485,21 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
     await locations_col.insert_one(loc_doc)
 
     # Update/create visit (group consecutive pings at same place)
+    # Sort by ended_at so we find the most recently *active* visit, not just most recently started.
     last_visit = await visits_col.find_one(
-        {"user_id": uid}, {"_id": 0}, sort=[("started_at", -1)]
+        {"user_id": uid}, {"_id": 0}, sort=[("ended_at", -1)]
     )
 
     same_place = False
     if last_visit:
-        # consider same place if within 100m of visit center
         dist = haversine_m(
             last_visit["center_lat"], last_visit["center_lng"], ping.latitude, ping.longitude
         )
-        same_place = dist < 100
+        if dist < 100:
+            last_ended = datetime.fromisoformat(last_visit["ended_at"].replace("Z", "+00:00"))
+            ping_time = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+            gap_minutes = (ping_time - last_ended).total_seconds() / 60
+            same_place = gap_minutes <= 2
 
     if same_place:
         await visits_col.update_one(

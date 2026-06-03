@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ScrollView, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import { MapPin, Clock } from 'lucide-react-native';
@@ -17,6 +17,8 @@ type Visit = {
   formatted_address?: string;
   started_at: string;
   ended_at: string;
+  center_lat?: number;
+  center_lng?: number;
 };
 
 export default function TimelineScreen() {
@@ -125,7 +127,13 @@ export default function TimelineScreen() {
                   <View style={[styles.node, idx === 0 && styles.nodeActive]} />
                   {idx < day.visits.length - 1 && <View style={styles.line} />}
                 </View>
-                <View style={styles.card}>
+                <TouchableOpacity
+                  testID={`visit-card-${v.id}`}
+                  style={styles.card}
+                  activeOpacity={0.75}
+                  disabled={v.center_lat == null || v.center_lng == null}
+                  onPress={() => openInMaps(v.center_lat!, v.center_lng!)}
+                >
                   <View style={styles.cardHeader}>
                     <MapPin size={16} color={colors.brand} strokeWidth={2.2} />
                     <Text style={styles.placeName} numberOfLines={1}>
@@ -141,7 +149,7 @@ export default function TimelineScreen() {
                     <Text style={styles.duration}>{formatDuration(v.started_at, v.ended_at)}</Text>
                     <Text style={styles.timeAgo}>{formatTimeRange(v.started_at, v.ended_at)}</Text>
                   </View>
-                </View>
+                </TouchableOpacity>
               </View>
             ))}
           </View>
@@ -149,6 +157,10 @@ export default function TimelineScreen() {
       />
     </SafeAreaView>
   );
+}
+
+function openInMaps(lat: number, lng: number) {
+  Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
 }
 
 function groupByDay(visits: Visit[]): { day: string; label: string; visits: Visit[] }[] {

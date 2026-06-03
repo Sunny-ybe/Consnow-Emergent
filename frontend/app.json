@@ -18,8 +18,11 @@
         "NSMotionUsageDescription": "Detect if you're walking, cycling, or driving so friends can see your availability",
         "UIBackgroundModes": [
           "location",
+          "fetch",
+          "location",
           "fetch"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -36,7 +39,12 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "ACTIVITY_RECOGNITION",
-        "com.google.android.gms.permission.ACTIVITY_RECOGNITION"
+        "com.google.android.gms.permission.ACTIVITY_RECOGNITION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "web": {
@@ -69,6 +77,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5678600e-4d9f-418a-afd0-b16f0d916831"
+      }
     }
   }
 }
