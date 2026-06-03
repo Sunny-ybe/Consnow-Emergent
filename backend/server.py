@@ -181,31 +181,50 @@ def public_user(u: dict) -> dict:
 
 
 async def reverse_geocode(lat: float, lng: float) -> dict:
-    """Use Google Geocoding API to get human-readable place name."""
+    """Use Google Places API (New) Nearby Search to get a nearby named place."""
+    # Types that indicate geographic/road features rather than named establishments
+    _GEO_TYPES = {"route", "political", "street_address", "intersection", "plus_code",
+                  "administrative_area_level_1", "administrative_area_level_2",
+                  "administrative_area_level_3", "locality", "sublocality",
+                  "sublocality_level_1", "postal_code", "country"}
     try:
         async with httpx.AsyncClient(timeout=8.0) as cli:
-            r = await cli.get(
-                "https://maps.googleapis.com/maps/api/geocode/json",
-                params={"latlng": f"{lat},{lng}", "key": GOOGLE_GEOCODING_API_KEY},
+            r = await cli.post(
+                "https://places.googleapis.com/v1/places:searchNearby",
+                headers={
+                    "X-Goog-Api-Key": GOOGLE_GEOCODING_API_KEY,
+                    "X-Goog-FieldMask": "places.displayName,places.types,places.formattedAddress",
+                },
+                json={
+                    "locationRestriction": {
+                        "circle": {
+                            "center": {"latitude": lat, "longitude": lng},
+                            "radius": 200.0,
+                        }
+                    },
+                    "maxResultCount": 10,
+                },
             )
             data = r.json()
-            if data.get("status") != "OK" or not data.get("results"):
+            places = data.get("places", [])
+            if not places:
                 return {"place_name": f"{lat:.4f}, {lng:.4f}", "neighborhood": None, "city": None}
 
-            first = data["results"][0]
-            formatted = first.get("formatted_address", "")
-            comps = {c["types"][0]: c["long_name"] for c in first.get("address_components", []) if c.get("types")}
-            neighborhood = comps.get("sublocality") or comps.get("sublocality_level_1") or comps.get("neighborhood")
-            city = comps.get("locality") or comps.get("administrative_area_level_2")
-            short_name = neighborhood or city or formatted.split(",")[0]
+            # Prefer named establishments; fall back to the first result if all are geo types
+            best = next(
+                (p for p in places if not _GEO_TYPES.intersection(p.get("types", []))),
+                places[0],
+            )
+            place_name = best.get("displayName", {}).get("text") or f"{lat:.4f}, {lng:.4f}"
+            formatted = best.get("formattedAddress", "")
             return {
-                "place_name": short_name,
+                "place_name": place_name,
                 "formatted_address": formatted,
-                "neighborhood": neighborhood,
-                "city": city,
+                "neighborhood": None,
+                "city": None,
             }
     except Exception as e:
-        logger.warning(f"Geocoding failed: {e}")
+        logger.warning(f"Places lookup failed: {e}")
         return {"place_name": f"{lat:.4f}, {lng:.4f}", "neighborhood": None, "city": None}
 
 
