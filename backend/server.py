@@ -503,7 +503,7 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
         dist = haversine_m(
             last_visit["center_lat"], last_visit["center_lng"], ping.latitude, ping.longitude
         )
-        if dist < 100:
+        if dist < 150:
             last_ended = datetime.fromisoformat(last_visit["ended_at"].replace("Z", "+00:00"))
             ping_time = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
             gap_minutes = (ping_time - last_ended).total_seconds() / 60
