@@ -86,17 +86,11 @@ export function availabilityLabel(a: Availability): string {
 
 export function activityLabel(a: Activity): string {
   switch (a) {
-    case 'stationary':
-      return 'Still';
-    case 'walking':
-      return 'Walking';
-    case 'running':
-      return 'Running';
-    case 'cycling':
-      return 'Cycling';
-    case 'automotive':
-      return 'Driving';
-    default:
-      return '';
+    case 'stationary': return '🧍‍♂️ Still';
+    case 'walking':    return '🚶‍♂️ Walking';
+    case 'running':    return '🏃‍♂️ Running';
+    case 'cycling':    return '🚴‍♂️ Cycling';
+    case 'automotive': return '🚘 Driving';
+    default:           return '';
   }
 }

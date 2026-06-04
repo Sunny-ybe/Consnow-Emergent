@@ -189,7 +189,7 @@ export default function MapTabScreen() {
         <View style={styles.infoCard}>
           <Activity size={18} color={colors.textSecondary} strokeWidth={2} />
           <Text style={styles.infoText}>
-            Friends also see if you're available, busy, or maybe — based on activity (still, walking,
+            Friends also see if you{"'"}re available, busy, or maybe — based on activity (still, walking,
             cycling, driving).
           </Text>
         </View>

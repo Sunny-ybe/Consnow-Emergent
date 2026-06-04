@@ -9,7 +9,7 @@ import bcrypt
 import httpx
 import jwt
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -56,7 +56,7 @@ def get_sharing_filter(friendship: dict, owner_id: str):
         win_start = int(friendship.get(f"window_start_{owner_id}", 0))
         win_end = int(friendship.get(f"window_end_{owner_id}", 24))
         current_hour = datetime.now(timezone.utc).hour
-        if not (win_start <= current_hour < win_end):
+        if not hour_in_window(current_hour, win_start, win_end):
             return "OUTSIDE_WINDOW"
         delay_min = FREQ_TO_MINUTES.get(freq, 10)
         return datetime.now(timezone.utc) - timedelta(minutes=delay_min)
@@ -73,6 +73,14 @@ db = client[DB_NAME]
 # Collections
 users_col = db["users"]
 friendships_col = db["friendships"]  # one row per pair
+
+
+def hour_in_window(hour: int, start: int, end: int) -> bool:
+    if start == 0 and end == 24:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
 locations_col = db["locations"]
 visits_col = db["visits"]
 
@@ -444,8 +452,6 @@ async def update_scope(req: ScopeUpdateReq, current_user: dict = Depends(get_cur
 async def update_sharing(req: SharingUpdateReq, current_user: dict = Depends(get_current_user)):
     if req.freq not in VALID_FREQS:
         raise HTTPException(status_code=400, detail="Invalid freq")
-    if req.window_start >= req.window_end:
-        raise HTTPException(status_code=400, detail="Window start must be < end")
     pair = pair_key(current_user["id"], req.friend_user_id)
     f = await friendships_col.find_one({"pair": pair})
     if not f or f["status"] != "accepted":
@@ -606,13 +612,14 @@ async def get_timeline(
                     nxt["center_lat"],
                     nxt["center_lng"],
                 ))
-                items.append({
-                    "type": "transport",
-                    "duration": duration_s,
-                    "distance_m": dist_m,
-                    "from_place": v.get("place_name"),
-                    "to_place": nxt.get("place_name"),
-                })
+                if dist_m >= 50:  # skip GPS-drift noise
+                    items.append({
+                        "type": "transport",
+                        "duration": duration_s,
+                        "distance_m": dist_m,
+                        "from_place": v.get("place_name"),
+                        "to_place": nxt.get("place_name"),
+                    })
             except Exception:
                 pass
 
@@ -693,9 +700,10 @@ def _format_duration_human(start_iso: str, end_iso: str) -> str:
         return ""
 
 
-def _format_time_human(iso: str) -> str:
+def _format_time_human(iso: str, timezone_offset_minutes: int = 0) -> str:
     try:
         d = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        d = d - timedelta(minutes=timezone_offset_minutes)
         return d.strftime("%-I:%M %p")
     except Exception:
         return ""
@@ -704,6 +712,7 @@ def _format_time_human(iso: str) -> str:
 @api.get("/locations/narrative/{user_id}")
 async def get_day_narrative(
     user_id: str,
+    timezone_offset_minutes: int = Query(0, ge=-840, le=840),
     current_user: dict = Depends(get_current_user),
 ):
     """Generate a warm, human, AI narrative of the last 12 hours of visits."""
@@ -750,7 +759,7 @@ async def get_day_narrative(
         for v in visits:
             place = v.get("place_name", "an unknown place")
             duration = _format_duration_human(v.get("started_at", ""), v.get("ended_at", ""))
-            time_str = _format_time_human(v.get("started_at", ""))
+            time_str = _format_time_human(v.get("started_at", ""), timezone_offset_minutes)
             lines.append(f"- {time_str}: {place} ({duration})")
         timeline_text = "\n".join(lines)
 

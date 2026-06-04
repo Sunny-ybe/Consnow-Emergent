@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -12,21 +12,20 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
-import { MapPin, Clock } from 'lucide-react-native';
+import { Clock } from 'lucide-react-native';
 import { colors, spacing, radius, typography, shadow } from '@/src/theme';
 import { Avatar } from '@/src/Avatar';
 import { AvailabilityBadge } from '@/src/AvailabilityBadge';
 import { getTimeline, listFriends } from '@/src/api';
 import { useAuth } from '@/src/auth';
-import { formatTimeAgo } from './index';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 type Visit = {
   type: 'visit';
   id: string;
   place_name: string;
   place_category?: string;
-  neighborhood?: string;
-  city?: string;
   formatted_address?: string;
   started_at: string;
   ended_at: string;
@@ -38,15 +37,28 @@ type Visit = {
 
 type Transport = {
   type: 'transport';
-  duration: number;    // seconds
+  duration: number;   // seconds
   distance_m: number;
   from_place?: string;
   to_place?: string;
 };
 
 type TimelineItem = Visit | Transport;
+type DayGroup = { day: string; label: string; items: TimelineItem[] };
 
-// Pulsing blue dot for ongoing visits
+type FlatVisit = {
+  type: 'visit';
+  data: Visit;
+  showLineAbove: boolean;
+  showLineBelow: boolean;
+  isFirstEver: boolean;
+};
+type FlatTransport = { type: 'transport'; data: Transport };
+type FlatSeparator = { type: 'daySeparator'; day: string; label: string };
+type FlatItem = FlatVisit | FlatTransport | FlatSeparator;
+
+// ─── Sub-components ──────────────────────────────────────────────────────────
+
 function PulsingDot() {
   const opacity = useRef(new Animated.Value(1)).current;
   useEffect(() => {
@@ -60,6 +72,103 @@ function PulsingDot() {
   return <Animated.View style={[styles.node, styles.nodeOngoing, { opacity }]} />;
 }
 
+// Pre-allocate dash segments so the array isn't recreated on every render
+const DASHES = Array.from({ length: 8 });
+function DashedLine() {
+  return (
+    <View style={styles.dashedLineWrap}>
+      {DASHES.map((_, i) => (
+        <View key={i} style={styles.dash} />
+      ))}
+    </View>
+  );
+}
+
+const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: FlatItem; minuteTick: number }) {
+  if (item.type === 'daySeparator') {
+    return <View style={styles.daySep} />;
+  }
+
+  if (item.type === 'transport') {
+    const t = item.data;
+    return (
+      <View style={styles.transportRow}>
+        <View style={styles.axis}>
+          <DashedLine />
+        </View>
+        <View style={styles.transportContent}>
+          <Text style={styles.transportText}>
+            {[
+              transportMode(t.distance_m, t.duration),
+              formatTransportDistance(t.distance_m),
+              formatTransportDuration(t.duration),
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  const { data: v, showLineAbove, showLineBelow, isFirstEver } = item;
+  const ongoing = isOngoing(v.ended_at, minuteTick);
+  const cat = categoryInfo(v.place_category);
+
+  return (
+    <View style={styles.visitRow}>
+      <View style={styles.axis}>
+        {showLineAbove
+          ? <View style={styles.lineAbove} />
+          : <View style={styles.lineAboveSpacer} />}
+        {ongoing ? <PulsingDot /> : (
+          <View style={[styles.node, isFirstEver && styles.nodeActive]} />
+        )}
+        {showLineBelow && <View style={styles.line} />}
+      </View>
+
+      <TouchableOpacity
+        testID={`visit-card-${v.id}`}
+        style={styles.card}
+        activeOpacity={0.75}
+        disabled={v.center_lat == null || v.center_lng == null}
+        onPress={() => openInMaps(v.center_lat!, v.center_lng!)}
+      >
+        <View style={styles.cardInner}>
+          <View style={[styles.catCircle, { backgroundColor: cat.bg }]}>
+            <Text style={styles.catEmoji}>{cat.emoji}</Text>
+          </View>
+          <View style={styles.cardBody}>
+            <Text style={styles.placeName} numberOfLines={1}>{v.place_name}</Text>
+            {v.place_category ? (
+              <Text style={styles.category}>{v.place_category.replace(/_/g, ' ')}</Text>
+            ) : null}
+            {v.formatted_address ? (
+              <Text style={styles.address} numberOfLines={1}>{v.formatted_address}</Text>
+            ) : null}
+            <View style={styles.metaRow}>
+              <Text style={styles.duration}>{formatDuration(v.started_at, v.ended_at, ongoing, minuteTick)}</Text>
+              <Text style={styles.timeRange}>{formatTimeRange(v.started_at, v.ended_at, ongoing)}</Text>
+            </View>
+            {v.availability ? (
+              <View style={styles.badgeRow}>
+                <AvailabilityBadge
+                  availability={v.availability as any}
+                  activity={v.activity}
+                  showActivity
+                  size="sm"
+                />
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </TouchableOpacity>
+    </View>
+  );
+});
+
+// ─── Main screen ─────────────────────────────────────────────────────────────
+
 export default function TimelineScreen() {
   const { user } = useAuth();
   const [selected, setSelected] = useState<string | null>(null);
@@ -67,6 +176,15 @@ export default function TimelineScreen() {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [scopeOff, setScopeOff] = useState(false);
+  const [visibleDayLabel, setVisibleDayLabel] = useState('Today');
+  const [displayedDays, setDisplayedDays] = useState(3);
+
+  // Tick every 60 s so ongoing-visit durations stay live
+  const [minuteTick, setMinuteTick] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setMinuteTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const loadFriends = useCallback(async () => {
     try {
@@ -78,8 +196,13 @@ export default function TimelineScreen() {
   const loadTimeline = useCallback(async (uid?: string | null) => {
     try {
       const res = await getTimeline(uid || undefined);
-      setItems(res.visits || []);
+      const newItems: TimelineItem[] = res.visits || [];
+      setItems(newItems);
       setScopeOff(res.scope === 'off');
+      setDisplayedDays(3);
+      // Seed the sticky header immediately so it's correct before onViewableItemsChanged fires
+      const firstGroup = groupByDay(newItems)[0];
+      setVisibleDayLabel(firstGroup?.label ?? 'Today');
     } catch (e: any) {
       setItems([]);
       if (e?.response?.status === 403) setScopeOff(true);
@@ -99,14 +222,30 @@ export default function TimelineScreen() {
     setRefreshing(false);
   }, [loadTimeline, selected]);
 
-  const grouped = groupByDay(items);
+  const grouped = useMemo(() => normalizeTodayGroups(groupByDay(items)), [items]);
+  const flatItems = useMemo(() => buildFlatItems(grouped.slice(0, displayedDays)), [displayedDays, grouped]);
+
+  const onEndReached = useCallback(() => {
+    setDisplayedDays((d) => Math.min(d + 3, grouped.length));
+  }, [grouped.length]);
+
+  const renderTimelineItem = useCallback(
+    ({ item }: { item: FlatItem }) => <FlatItemRow item={item} minuteTick={minuteTick} />,
+    [minuteTick],
+  );
+
+  // Both refs must be stable across renders — FlatList warns if they change
+  const viewabilityConfig = useRef({ minimumViewTime: 0, itemVisiblePercentThreshold: 1 });
+  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    // Find the topmost visible day separator and update the sticky header
+    const sep = viewableItems.find((vi: any) => vi.item?.type === 'daySeparator');
+    if (sep) setVisibleDayLabel(sep.item.label);
+  });
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Timeline</Text>
-      </View>
 
+      {/* Friend avatar picker — stays fixed above the date header */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -118,7 +257,7 @@ export default function TimelineScreen() {
           onPress={() => setSelected(null)}
           activeOpacity={0.7}
         >
-          <Avatar name={user?.display_name} size={56} />
+          <Avatar name={user?.display_name} size={48} />
           <Text style={styles.avatarLabel}>You</Text>
         </TouchableOpacity>
         {friends.map((f) => (
@@ -129,7 +268,7 @@ export default function TimelineScreen() {
             onPress={() => setSelected(f.user.id)}
             activeOpacity={0.7}
           >
-            <Avatar name={f.user.display_name} size={56} />
+            <Avatar name={f.user.display_name} size={48} />
             <Text style={styles.avatarLabel} numberOfLines={1}>
               {f.user.display_name.split(' ')[0]}
             </Text>
@@ -137,11 +276,21 @@ export default function TimelineScreen() {
         ))}
       </ScrollView>
 
+      {/* Sticky date label — updates as user scrolls through days */}
+      <View style={styles.stickyHeader}>
+        <Text style={styles.stickyHeaderLabel}>{visibleDayLabel}</Text>
+      </View>
+
+      {/* Single continuously scrollable timeline */}
       <FlatList
-        data={grouped}
-        keyExtractor={(g) => g.day}
+        data={flatItems}
+        keyExtractor={timelineItemKey}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }}
+        contentContainerStyle={styles.listContent}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.3}
+        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={viewabilityConfig.current}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Clock size={48} color={colors.textTertiary} strokeWidth={1.5} />
@@ -155,124 +304,128 @@ export default function TimelineScreen() {
             </Text>
           </View>
         }
-        renderItem={({ item: day }) => {
-          const firstVisitId = (day.items.find((i) => i.type !== 'transport') as Visit | undefined)?.id;
-          return (
-            <View style={{ marginBottom: spacing.lg }}>
-              <Text style={styles.dayHeader}>{day.label}</Text>
-              {day.items.map((item, idx) => {
-                // Transport segment
-                if (item.type === 'transport') {
-                  return (
-                    <View key={`t-${idx}`} style={styles.visitRow}>
-                      <View style={styles.axis}>
-                        {idx < day.items.length - 1 && <View style={styles.line} />}
-                      </View>
-                      <View style={styles.transportCard}>
-                        <Text style={styles.transportText}>
-                          {[
-                            formatTransportDistance(item.distance_m),
-                            formatTransportDuration(item.duration),
-                          ]
-                            .filter(Boolean)
-                            .join('  ·  ')}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                }
-
-                // Visit
-                const v = item as Visit;
-                const ongoing = isOngoing(v.ended_at);
-                const isFirstVisit = v.id === firstVisitId;
-
-                return (
-                  <View key={v.id} style={styles.visitRow}>
-                    <View style={styles.axis}>
-                      {ongoing ? (
-                        <PulsingDot />
-                      ) : (
-                        <View style={[styles.node, isFirstVisit && styles.nodeActive]} />
-                      )}
-                      {idx < day.items.length - 1 && <View style={styles.line} />}
-                    </View>
-                    <TouchableOpacity
-                      testID={`visit-card-${v.id}`}
-                      style={styles.card}
-                      activeOpacity={0.75}
-                      disabled={v.center_lat == null || v.center_lng == null}
-                      onPress={() => openInMaps(v.center_lat!, v.center_lng!)}
-                    >
-                      <View style={styles.cardHeader}>
-                        <MapPin size={16} color={colors.brand} strokeWidth={2.2} />
-                        <Text style={styles.placeName} numberOfLines={1}>
-                          {v.place_name}
-                        </Text>
-                      </View>
-                      {v.place_category ? (
-                        <Text style={styles.category}>
-                          {v.place_category.replace(/_/g, ' ')}
-                        </Text>
-                      ) : null}
-                      {v.formatted_address ? (
-                        <Text style={styles.address} numberOfLines={1}>
-                          {v.formatted_address}
-                        </Text>
-                      ) : null}
-                      <View style={styles.metaRow}>
-                        <Text style={styles.duration}>
-                          {formatDuration(v.started_at, v.ended_at, ongoing)}
-                        </Text>
-                        <Text style={styles.timeAgo}>
-                          {formatTimeRange(v.started_at, v.ended_at, ongoing)}
-                        </Text>
-                      </View>
-                      {v.availability ? (
-                        <View style={styles.badgeRow}>
-                          <AvailabilityBadge
-                            availability={v.availability as any}
-                            activity={v.activity}
-                            showActivity
-                            size="sm"
-                          />
-                        </View>
-                      ) : null}
-                    </TouchableOpacity>
-                  </View>
-                );
-              })}
-            </View>
-          );
-        }}
+        renderItem={renderTimelineItem}
       />
     </SafeAreaView>
   );
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+function timelineItemKey(item: FlatItem, index: number): string {
+  if (item.type === 'daySeparator') return `sep-${item.day}`;
+  if (item.type === 'visit') {
+    const v = item.data;
+    return `visit-${v.id || 'missing'}-${v.started_at || index}-${index}`;
+  }
+  return `transport-${item.data.from_place || 'from'}-${item.data.to_place || 'to'}-${item.data.duration}-${index}`;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function buildFlatItems(groups: DayGroup[]): FlatItem[] {
+  const flat: FlatItem[] = [];
+  let isFirstEver = true;
+
+  for (const group of groups) {
+    flat.push({ type: 'daySeparator', day: group.day, label: group.label });
+
+    for (let i = 0; i < group.items.length; i++) {
+      const item = group.items[i];
+      const prev = i > 0 ? group.items[i - 1] : null;
+      const next = i < group.items.length - 1 ? group.items[i + 1] : null;
+
+      if (item.type === 'transport') {
+        flat.push({ type: 'transport', data: item });
+      } else {
+        flat.push({
+          type: 'visit',
+          data: item as Visit,
+          showLineAbove: prev !== null,
+          showLineBelow: next !== null,
+          isFirstEver,
+        });
+        isFirstEver = false;
+      }
+    }
+  }
+
+  return flat;
+}
+
+function normalizeTodayGroups(groups: DayGroup[]): DayGroup[] {
+  const today = dayKey(new Date());
+  const hasTodayVisit = groups.some((group) =>
+    group.day === today && group.items.some((item) => item.type !== 'transport'),
+  );
+  if (hasTodayVisit) return groups;
+
+  let latestGroupIndex = -1;
+  let latestItemIndex = -1;
+  let latestTime = -Infinity;
+
+  groups.forEach((group, groupIndex) => {
+    group.items.forEach((item, itemIndex) => {
+      if (item.type === 'transport') return;
+      const time = new Date(item.started_at).getTime();
+      if (!Number.isFinite(time)) return;
+      if (time > latestTime) {
+        latestTime = time;
+        latestGroupIndex = groupIndex;
+        latestItemIndex = itemIndex;
+      }
+    });
+  });
+
+  if (latestGroupIndex === -1 || latestItemIndex === -1) return groups;
+
+  const latestVisit = groups[latestGroupIndex].items[latestItemIndex];
+  const remainingGroups = groups
+    .map((group, groupIndex) => ({
+      ...group,
+      items: group.items.filter((_, itemIndex) => groupIndex !== latestGroupIndex || itemIndex !== latestItemIndex),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  return [{ day: today, label: 'Today', items: [latestVisit] }, ...remainingGroups];
+}
+
+function categoryInfo(cat?: string): { emoji: string; bg: string } {
+  if (!cat) return { emoji: '📍', bg: colors.bgTertiary };
+  const c = cat.toLowerCase();
+  if (c.includes('gym') || c.includes('fitness') || c.includes('sport'))
+    return { emoji: '💪', bg: '#FFE5E5' };
+  if (c.includes('library'))
+    return { emoji: '📚', bg: '#E5EBFF' };
+  if (c.includes('restaurant') || c.includes('food') || c.includes('meal') || c.includes('bakery'))
+    return { emoji: '🍴', bg: '#FFF0E5' };
+  if (c.includes('coffee') || c.includes('cafe'))
+    return { emoji: '☕', bg: '#F5EFE0' };
+  if (c.includes('hotel') || c.includes('lodging'))
+    return { emoji: '🏨', bg: '#F0E5FF' };
+  if (c.includes('police'))
+    return { emoji: '🚔', bg: '#E5F0FF' };
+  if (c.includes('shop') || c.includes('store') || c.includes('mall'))
+    return { emoji: '🛍️', bg: '#FFE5F5' };
+  return { emoji: '📍', bg: colors.bgTertiary };
+}
 
 function openInMaps(lat: number, lng: number) {
   Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
 }
 
-function isOngoing(endedAt: string): boolean {
+function isOngoing(endedAt: string, now = Date.now()): boolean {
   const ended = new Date(endedAt).getTime();
-  const now = Date.now();
-  // Guard against future ended_at (wrong device clock) treating every visit as ongoing
   return ended <= now && now - ended < 15 * 60 * 1000;
 }
 
-function groupByDay(items: TimelineItem[]): { day: string; label: string; items: TimelineItem[] }[] {
-  const groups: { day: string; label: string; items: TimelineItem[] }[] = [];
+function groupByDay(items: TimelineItem[]): DayGroup[] {
+  const groups: DayGroup[] = [];
   for (const item of items) {
     if (item.type === 'transport') {
-      // Attach to current group; ignore if no group started yet
       if (groups.length > 0) groups[groups.length - 1].items.push(item);
       continue;
     }
     const d = new Date(item.started_at);
-    const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    const key = dayKey(d);
     if (groups.length === 0 || groups[groups.length - 1].day !== key) {
       groups.push({ day: key, label: dayLabel(d), items: [] });
     }
@@ -281,33 +434,45 @@ function groupByDay(items: TimelineItem[]): { day: string; label: string; items:
   return groups;
 }
 
+function dayKey(d: Date): string {
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
 function dayLabel(d: Date): string {
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
   const same = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
   if (same(d, today)) return 'Today';
   if (same(d, yesterday)) return 'Yesterday';
   return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-function formatDuration(start: string, end: string, ongoing = false): string {
+function formatDuration(start: string, end: string, ongoing = false, now = Date.now()): string {
   const s = new Date(start).getTime();
-  const e = ongoing ? Date.now() : new Date(end).getTime();
-  const mins = Math.max(0, Math.round((e - s) / 60000));
+  const e = ongoing ? now : new Date(end).getTime();
+  const raw = Math.round((e - s) / 60000);
+  // Math.max(0, NaN) === NaN in JS; guard explicitly
+  const mins = isNaN(raw) ? 0 : Math.max(0, raw);
   if (mins < 1) return 'Briefly';
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
 function formatTimeRange(start: string, end: string, ongoing = false): string {
-  const fmt = (d: Date) => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  if (ongoing) return `${fmt(new Date(start))} – now`;
-  return `${fmt(new Date(start))} – ${fmt(new Date(end))}`;
+  try {
+    const fmt = (d: Date) =>
+      d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    if (ongoing) return `${fmt(new Date(start))} – now`;
+    return `${fmt(new Date(start))} – ${fmt(new Date(end))}`;
+  } catch {
+    return '';
+  }
 }
 
 function formatTransportDistance(m: number): string {
@@ -324,57 +489,144 @@ function formatTransportDuration(secs: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-// ─── Styles ─────────────────────────────────────────────────────────────────
+function transportMode(distance_m: number, duration: number): string {
+  const speed = duration > 0 ? distance_m / duration : 0;
+  if (speed < 1.4) return '🚶‍♂️ Walking';
+  if (speed < 4) return '🏃‍♂️ Running';
+  if (speed < 7) return '🚴‍♂️ Cycling';
+  return '🚘 Driving';
+}
+
+// ─── Styles ──────────────────────────────────────────────────────────────────
+
+const AXIS_WIDTH = 32;
+const NODE_SIZE = 12;
+const LINE_W = 2;
+// Shorter connector keeps transport segments compact (was 14)
+const LINE_ABOVE_H = 8;
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  title: { ...typography.h1, color: colors.textPrimary },
-  avatarRow: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, gap: 12 },
-  avatarTile: { alignItems: 'center', gap: 6, padding: 4, borderRadius: radius.md },
+
+  // Friend picker
+  avatarRow: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 12 },
+  avatarTile: { alignItems: 'center', gap: 4, padding: 4, borderRadius: radius.md },
   avatarTileActive: { backgroundColor: colors.bgTertiary },
-  avatarLabel: { ...typography.caption, color: colors.textPrimary, maxWidth: 70 },
-  dayHeader: { ...typography.overline, color: colors.textSecondary, marginBottom: spacing.md },
-  visitRow: { flexDirection: 'row', minHeight: 80 },
-  axis: { width: 24, alignItems: 'center' },
+  avatarLabel: { ...typography.caption, color: colors.textPrimary, maxWidth: 60 },
+
+  // Sticky date header (replaces the arrow nav bar)
+  stickyHeader: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.bg,
+  },
+  stickyHeaderLabel: { ...typography.h3, color: colors.textPrimary },
+
+  listContent: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xxl,
+  },
+
+  // ── Day separator (in-list anchor for viewability tracking) ──
+  daySep: {
+    height: 1,
+    opacity: 0,
+  },
+  // ── Visit row ──
+  visitRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+
+  // Axis: narrow column that carries the continuous line
+  axis: {
+    width: AXIS_WIDTH,
+    alignItems: 'center',
+    flexDirection: 'column',
+  },
+  lineAboveSpacer: { width: LINE_W, height: LINE_ABOVE_H },
+  lineAbove: { width: LINE_W, height: LINE_ABOVE_H, backgroundColor: colors.border },
   node: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: NODE_SIZE,
+    height: NODE_SIZE,
+    borderRadius: NODE_SIZE / 2,
     backgroundColor: colors.textSecondary,
-    marginTop: spacing.md,
   },
   nodeActive: { backgroundColor: colors.accent },
   nodeOngoing: { backgroundColor: colors.accent },
-  line: { width: 2, flex: 1, backgroundColor: colors.border, marginTop: 4 },
+  line: { width: LINE_W, flex: 1, backgroundColor: colors.border, marginTop: 2 },
+
+  // ── Transport row — kept tight so it reads as a connector, not a card ──
+  transportRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    height: 60,
+  },
+  dashedLineWrap: {
+    width: LINE_W,
+    flex: 1,
+    overflow: 'hidden',
+  },
+  dash: {
+    width: LINE_W,
+    height: 4,
+    backgroundColor: colors.textTertiary,
+    marginBottom: 3,
+  },
+  transportContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingLeft: spacing.sm + 4,
+    paddingVertical: 2,
+  },
+  transportText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
+
+  // ── Place card ──
   card: {
     flex: 1,
     backgroundColor: colors.bgSecondary,
     borderRadius: radius.lg,
     padding: spacing.md,
-    marginBottom: spacing.sm,
     marginLeft: spacing.sm,
+    marginBottom: spacing.xs,
     ...shadow.subtle,
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  placeName: { ...typography.h3, color: colors.textPrimary, flex: 1 },
-  category: { ...typography.caption, color: colors.textTertiary, marginBottom: 4 },
-  address: { ...typography.body, color: colors.textSecondary, marginBottom: 6 },
-  metaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  duration: { ...typography.caption, color: colors.textPrimary, fontWeight: '700' },
-  timeAgo: { ...typography.caption, color: colors.textTertiary },
-  badgeRow: { marginTop: 6 },
-  transportCard: {
-    flex: 1,
-    marginLeft: spacing.sm,
-    marginBottom: spacing.sm,
-    paddingVertical: 6,
-    paddingHorizontal: spacing.md,
-    backgroundColor: colors.bgTertiary,
-    borderRadius: radius.md,
-    alignSelf: 'flex-start',
+  cardInner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
   },
-  transportText: { ...typography.caption, color: colors.textSecondary },
+  catCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  catEmoji: { fontSize: 18 },
+  cardBody: { flex: 1 },
+  placeName: { ...typography.h3, color: colors.textPrimary, marginBottom: 1 },
+  category: { ...typography.caption, color: colors.textTertiary, marginBottom: 3 },
+  address: { ...typography.caption, color: colors.textSecondary, marginBottom: 4 },
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  duration: { ...typography.caption, color: colors.textPrimary, fontWeight: '700' },
+  timeRange: { ...typography.caption, color: colors.textTertiary },
+  badgeRow: { marginTop: 6 },
+
+  // ── Empty state ──
   empty: { alignItems: 'center', paddingVertical: spacing.xxl, gap: spacing.sm },
   emptyTitle: { ...typography.h2, color: colors.textPrimary, marginTop: spacing.md },
   emptyBody: {

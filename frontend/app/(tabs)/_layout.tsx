@@ -26,7 +26,7 @@ export default function TabsLayout() {
         options={{
           title: 'Map',
           tabBarIcon: ({ color, size }) => <Map size={size} color={color} strokeWidth={2} />,
-          tabBarTestID: 'tab-map',
+          tabBarButtonTestID: 'tab-map',
         }}
       />
       <Tabs.Screen
@@ -34,7 +34,7 @@ export default function TabsLayout() {
         options={{
           title: 'Friends',
           tabBarIcon: ({ color, size }) => <Users size={size} color={color} strokeWidth={2} />,
-          tabBarTestID: 'tab-friends',
+          tabBarButtonTestID: 'tab-friends',
         }}
       />
       <Tabs.Screen
@@ -42,7 +42,7 @@ export default function TabsLayout() {
         options={{
           title: 'Timeline',
           tabBarIcon: ({ color, size }) => <Clock size={size} color={color} strokeWidth={2} />,
-          tabBarTestID: 'tab-timeline',
+          tabBarButtonTestID: 'tab-timeline',
         }}
       />
       <Tabs.Screen
@@ -50,7 +50,7 @@ export default function TabsLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color, size }) => <User size={size} color={color} strokeWidth={2} />,
-          tabBarTestID: 'tab-profile',
+          tabBarButtonTestID: 'tab-profile',
         }}
       />
     </Tabs>

@@ -8,7 +8,7 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { colors, radius, typography } from './theme';
+import { colors, radius, sliderShadow, typography } from './theme';
 
 type Props = {
   steps: string[];        // e.g. ['10m', '1h', '6h', '12h', '24h', 'off']
@@ -146,11 +146,7 @@ const styles = StyleSheet.create({
     borderColor: colors.brand,
     position: 'absolute',
     top: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
+    ...sliderShadow,
   },
   labelsRow: {
     flexDirection: 'row',

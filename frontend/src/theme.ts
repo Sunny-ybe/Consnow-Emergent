@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 // Consnow design tokens
 export const colors = {
   bg: '#F9F9FB',
@@ -47,18 +49,41 @@ export const typography = {
 };
 
 export const shadow = {
-  subtle: {
+  subtle: Platform.select({
+    web: {
+      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+    },
+    default: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.04,
+      shadowRadius: 8,
+      elevation: 2,
+    },
+  }),
+  card: Platform.select({
+    web: {
+      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.08)',
+    },
+    default: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.08,
+      shadowRadius: 16,
+      elevation: 4,
+    },
+  }),
+};
+
+export const sliderShadow = Platform.select({
+  web: {
+    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.16)',
+  },
+  default: {
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  card: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
+    shadowOpacity: 0.16,
+    shadowRadius: 4,
     elevation: 4,
   },
-};
+});

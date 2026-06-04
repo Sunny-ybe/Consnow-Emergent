@@ -38,6 +38,31 @@ function formatHour(h: number): string {
   return `${h - 12}pm`;
 }
 
+function utcHourToLocal(h: number): number {
+  if (h === 24) return 24;
+  const d = new Date();
+  d.setUTCHours(h, 0, 0, 0);
+  return d.getHours();
+}
+
+function localHourToUtc(h: number): number {
+  if (h === 24) return 24;
+  const d = new Date();
+  d.setHours(h, 0, 0, 0);
+  const utcMinutes = h * 60 + d.getTimezoneOffset();
+  return ((Math.round(utcMinutes / 60) % 24) + 24) % 24;
+}
+
+function utcWindowToLocal(start: number, end: number): { start: number; end: number } {
+  if (start === 0 && end === 24) return { start: 0, end: 24 };
+  return { start: utcHourToLocal(start), end: utcHourToLocal(end) };
+}
+
+function localWindowToUtc(start: number, end: number): { start: number; end: number } {
+  if (start === 0 && end === 24) return { start: 0, end: 24 };
+  return { start: localHourToUtc(start), end: localHourToUtc(end) };
+}
+
 export default function FriendDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -61,11 +86,15 @@ export default function FriendDetailScreen() {
         const sg = f.sharing_i_grant || {};
         setEnabled(sg.enabled !== false);
         setFreq(sg.freq || '10m');
-        setWinStart(typeof sg.window_start === 'number' ? sg.window_start : 0);
-        setWinEnd(typeof sg.window_end === 'number' ? sg.window_end : 24);
+        const localWindow = utcWindowToLocal(
+          typeof sg.window_start === 'number' ? sg.window_start : 0,
+          typeof sg.window_end === 'number' ? sg.window_end : 24,
+        );
+        setWinStart(localWindow.start);
+        setWinEnd(localWindow.end);
       }
       const t = await getTimeline(id);
-      setVisits(t.visits || []);
+      setVisits((t.visits || []).filter((v: any) => v.type !== 'transport'));
     } catch (e) {
       // ignore
     } finally {
@@ -96,7 +125,8 @@ export default function FriendDetailScreen() {
     const ws = next.winStart !== undefined ? next.winStart : winStart;
     const we = next.winEnd !== undefined ? next.winEnd : winEnd;
     try {
-      await updateSharing(id, e, fr, ws, we);
+      const utcWindow = localWindowToUtc(ws, we);
+      await updateSharing(id, e, fr, utcWindow.start, utcWindow.end);
     } catch (err: any) {
       Alert.alert('Could not save', err?.response?.data?.detail || 'Try again');
     }
@@ -264,8 +294,8 @@ export default function FriendDetailScreen() {
             <Text style={styles.empty}>No visits visible yet.</Text>
           </View>
         ) : (
-          visits.slice(0, 10).map((v) => (
-            <View key={v.id} style={styles.visitCard}>
+          visits.slice(0, 10).map((v, index) => (
+            <View key={visitKey(v, index)} style={styles.visitCard}>
               <MapPin size={16} color={colors.brand} strokeWidth={2.2} />
               <View style={{ flex: 1, marginLeft: spacing.sm }}>
                 <Text style={styles.placeName} numberOfLines={1}>
@@ -290,6 +320,10 @@ function formatDuration(start: string, end: string): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+function visitKey(v: any, index: number): string {
+  return `${v.id || 'visit'}-${v.started_at || index}-${index}`;
 }
 
 const styles = StyleSheet.create({

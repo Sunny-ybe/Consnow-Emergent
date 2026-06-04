@@ -132,7 +132,9 @@ export async function getLatestLocation(user_id?: string) {
 }
 
 export async function getDayNarrative(user_id: string) {
-  const { data } = await api.get(`/locations/narrative/${user_id}`);
+  const { data } = await api.get(`/locations/narrative/${user_id}`, {
+    params: { timezone_offset_minutes: new Date().getTimezoneOffset() },
+  });
   return data;
 }
 

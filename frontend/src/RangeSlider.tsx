@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { colors, radius, typography } from './theme';
+import { colors, radius, sliderShadow, typography } from './theme';
 
 type Props = {
   min: number;
@@ -165,11 +165,7 @@ const styles = StyleSheet.create({
     borderColor: colors.brand,
     position: 'absolute',
     top: 9,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 4,
-    elevation: 4,
+    ...sliderShadow,
   },
   ticksRow: {
     height: 18,
