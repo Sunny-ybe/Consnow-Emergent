@@ -97,15 +97,17 @@ const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: Flat
           <DashedLine />
         </View>
         <View style={styles.transportContent}>
-          <Text style={styles.transportText}>
-            {[
-              transportMode(t.distance_m, t.duration),
-              formatTransportDistance(t.distance_m),
-              formatTransportDuration(t.duration),
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Text>
+          <View style={styles.transportPill}>
+            <Text style={styles.transportText}>
+              {[
+                transportMode(t.distance_m, t.duration),
+                formatTransportDistance(t.distance_m),
+                formatTransportDuration(t.duration),
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </View>
         </View>
       </View>
     );
@@ -257,23 +259,30 @@ export default function TimelineScreen() {
           onPress={() => setSelected(null)}
           activeOpacity={0.7}
         >
-          <Avatar name={user?.display_name} size={48} />
-          <Text style={styles.avatarLabel}>You</Text>
+          <View style={[styles.avatarRing, selected === null && styles.avatarRingActive]}>
+            <Avatar name={user?.display_name} size={48} />
+          </View>
+          <Text style={[styles.avatarLabel, selected === null && styles.avatarLabelActive]}>You</Text>
         </TouchableOpacity>
-        {friends.map((f) => (
-          <TouchableOpacity
-            key={f.user.id}
-            testID={`timeline-friend-${f.user.id}`}
-            style={[styles.avatarTile, selected === f.user.id && styles.avatarTileActive]}
-            onPress={() => setSelected(f.user.id)}
-            activeOpacity={0.7}
-          >
-            <Avatar name={f.user.display_name} size={48} />
-            <Text style={styles.avatarLabel} numberOfLines={1}>
-              {f.user.display_name.split(' ')[0]}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {friends.map((f) => {
+          const isSelected = selected === f.user.id;
+          return (
+            <TouchableOpacity
+              key={f.user.id}
+              testID={`timeline-friend-${f.user.id}`}
+              style={[styles.avatarTile, isSelected && styles.avatarTileActive]}
+              onPress={() => setSelected(f.user.id)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.avatarRing, isSelected && styles.avatarRingActive]}>
+                <Avatar name={f.user.display_name} size={48} />
+              </View>
+              <Text style={[styles.avatarLabel, isSelected && styles.avatarLabelActive]} numberOfLines={1}>
+                {f.user.display_name.split(' ')[0]}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
 
       {/* Sticky date label — updates as user scrolls through days */}
@@ -510,9 +519,27 @@ const styles = StyleSheet.create({
 
   // Friend picker
   avatarRow: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 12 },
-  avatarTile: { alignItems: 'center', gap: 4, padding: 4, borderRadius: radius.md },
-  avatarTileActive: { backgroundColor: colors.bgTertiary },
-  avatarLabel: { ...typography.caption, color: colors.textPrimary, maxWidth: 60 },
+  avatarTile: {
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: radius.lg,
+  },
+  avatarTileActive: { backgroundColor: colors.accentMuted },
+  avatarRing: {
+    borderWidth: 2,
+    borderColor: 'transparent',
+    borderRadius: 28,
+    padding: 2,
+    opacity: 0.74,
+  },
+  avatarRingActive: {
+    borderColor: colors.accent,
+    opacity: 1,
+  },
+  avatarLabel: { ...typography.caption, color: colors.textSecondary, maxWidth: 64 },
+  avatarLabelActive: { color: colors.brand, fontWeight: '800' },
 
   // Sticky date header (replaces the arrow nav bar)
   stickyHeader: {
@@ -548,7 +575,7 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
   },
   lineAboveSpacer: { width: LINE_W, height: LINE_ABOVE_H },
-  lineAbove: { width: LINE_W, height: LINE_ABOVE_H, backgroundColor: colors.border },
+  lineAbove: { width: LINE_W, height: LINE_ABOVE_H, backgroundColor: colors.textTertiary },
   node: {
     width: NODE_SIZE,
     height: NODE_SIZE,
@@ -557,7 +584,7 @@ const styles = StyleSheet.create({
   },
   nodeActive: { backgroundColor: colors.accent },
   nodeOngoing: { backgroundColor: colors.accent },
-  line: { width: LINE_W, flex: 1, backgroundColor: colors.border, marginTop: 2 },
+  line: { width: LINE_W, flex: 1, backgroundColor: colors.textTertiary, marginTop: 2 },
 
   // ── Transport row — kept tight so it reads as a connector, not a card ──
   transportRow: {
@@ -582,10 +609,18 @@ const styles = StyleSheet.create({
     paddingLeft: spacing.sm + 4,
     paddingVertical: 2,
   },
+  transportPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.bgTertiary,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+  },
   transportText: {
     ...typography.caption,
-    color: colors.textSecondary,
+    color: colors.textPrimary,
     fontStyle: 'italic',
+    fontWeight: '700',
   },
 
   // ── Place card ──
