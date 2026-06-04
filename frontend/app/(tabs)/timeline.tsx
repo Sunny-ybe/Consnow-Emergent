@@ -33,6 +33,7 @@ type Visit = {
   center_lng?: number;
   activity?: string;
   availability?: string;
+  visit_count?: number;
 };
 
 type Transport = {
@@ -116,6 +117,7 @@ const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: Flat
   const { data: v, showLineAbove, showLineBelow, isFirstEver } = item;
   const ongoing = isOngoing(v.ended_at, minuteTick);
   const cat = categoryInfo(v.place_category);
+  const isMerged = (v.visit_count || 1) > 1;
 
   return (
     <View style={styles.visitRow}>
@@ -124,7 +126,7 @@ const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: Flat
           ? <View style={styles.lineAbove} />
           : <View style={styles.lineAboveSpacer} />}
         {ongoing ? <PulsingDot /> : (
-          <View style={[styles.node, isFirstEver && styles.nodeActive]} />
+          <View style={[styles.node, isMerged && styles.nodeMerged, isFirstEver && styles.nodeActive]} />
         )}
         {showLineBelow && <View style={styles.line} />}
       </View>
@@ -149,7 +151,7 @@ const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: Flat
               <Text style={styles.address} numberOfLines={1}>{v.formatted_address}</Text>
             ) : null}
             <View style={styles.metaRow}>
-              <Text style={styles.duration}>{formatDuration(v.started_at, v.ended_at, ongoing, minuteTick)}</Text>
+              <Text style={styles.duration}>{formatVisitDuration(v, ongoing, minuteTick)}</Text>
               <Text style={styles.timeRange}>{formatTimeRange(v.started_at, v.ended_at, ongoing)}</Text>
             </View>
             {v.availability ? (
@@ -224,7 +226,7 @@ export default function TimelineScreen() {
     setRefreshing(false);
   }, [loadTimeline, selected]);
 
-  const grouped = useMemo(() => normalizeTodayGroups(groupByDay(items)), [items]);
+  const grouped = useMemo(() => normalizeTodayGroups(groupByDay(collapseRepeatedVisits(items))), [items]);
   const flatItems = useMemo(() => buildFlatItems(grouped.slice(0, displayedDays)), [displayedDays, grouped]);
 
   const onEndReached = useCallback(() => {
@@ -360,6 +362,88 @@ function buildFlatItems(groups: DayGroup[]): FlatItem[] {
   return flat;
 }
 
+function collapseRepeatedVisits(items: TimelineItem[]): TimelineItem[] {
+  const collapsed: TimelineItem[] = [];
+  let run: Visit[] = [];
+  let pendingTransport: Transport[] = [];
+
+  const flushRun = () => {
+    if (run.length > 0) {
+      collapsed.push(mergeVisitRun(run));
+      run = [];
+    }
+  };
+
+  const flushPendingTransport = () => {
+    if (pendingTransport.length > 0) {
+      collapsed.push(...pendingTransport);
+      pendingTransport = [];
+    }
+  };
+
+  for (const item of items) {
+    if (item.type === 'transport') {
+      if (run.length > 0) {
+        pendingTransport.push(item);
+      } else {
+        collapsed.push(item);
+      }
+      continue;
+    }
+
+    if (run.length === 0) {
+      run = [item];
+      continue;
+    }
+
+    const previous = run[run.length - 1];
+    const previousPlace = normalizePlaceName(previous.place_name);
+    const itemPlace = normalizePlaceName(item.place_name);
+    const samePlace = previousPlace.length > 0 && previousPlace === itemPlace;
+    const sameDay = dayKey(new Date(previous.started_at)) === dayKey(new Date(item.started_at));
+
+    if (samePlace && sameDay) {
+      run.push(item);
+      pendingTransport = [];
+    } else {
+      flushRun();
+      flushPendingTransport();
+      run = [item];
+    }
+  }
+
+  flushRun();
+  flushPendingTransport();
+  return collapsed;
+}
+
+function mergeVisitRun(visits: Visit[]): Visit {
+  if (visits.length === 1) return visits[0];
+
+  let startedAt = visits[0].started_at;
+  let endedAt = visits[0].ended_at;
+
+  for (const visit of visits) {
+    if (new Date(visit.started_at).getTime() < new Date(startedAt).getTime()) {
+      startedAt = visit.started_at;
+    }
+    if (new Date(visit.ended_at).getTime() > new Date(endedAt).getTime()) {
+      endedAt = visit.ended_at;
+    }
+  }
+
+  return {
+    ...visits[0],
+    started_at: startedAt,
+    ended_at: endedAt,
+    visit_count: visits.length,
+  };
+}
+
+function normalizePlaceName(place?: string): string {
+  return (place || '').trim().toLowerCase();
+}
+
 function normalizeTodayGroups(groups: DayGroup[]): DayGroup[] {
   const today = dayKey(new Date());
   const hasTodayVisit = groups.some((group) =>
@@ -466,11 +550,18 @@ function formatDuration(start: string, end: string, ongoing = false, now = Date.
   const raw = Math.round((e - s) / 60000);
   // Math.max(0, NaN) === NaN in JS; guard explicitly
   const mins = isNaN(raw) ? 0 : Math.max(0, raw);
-  if (mins < 1) return 'Briefly';
+  if (mins < 1) return '<1 min';
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+function formatVisitDuration(v: Visit, ongoing = false, now = Date.now()): string {
+  const count = v.visit_count || 1;
+  if (count <= 1) return formatDuration(v.started_at, v.ended_at, ongoing, now);
+
+  return `${count} stops · ${formatDuration(v.started_at, v.ended_at, ongoing, now)}`;
 }
 
 function formatTimeRange(start: string, end: string, ongoing = false): string {
@@ -584,6 +675,13 @@ const styles = StyleSheet.create({
   },
   nodeActive: { backgroundColor: colors.accent },
   nodeOngoing: { backgroundColor: colors.accent },
+  nodeMerged: {
+    width: NODE_SIZE + 4,
+    height: NODE_SIZE + 4,
+    borderRadius: (NODE_SIZE + 4) / 2,
+    borderWidth: 3,
+    borderColor: colors.bg,
+  },
   line: { width: LINE_W, flex: 1, backgroundColor: colors.textTertiary, marginTop: 2 },
 
   // ── Transport row — kept tight so it reads as a connector, not a card ──
