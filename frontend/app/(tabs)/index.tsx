@@ -8,6 +8,7 @@ import {
   Platform,
   ScrollView,
   RefreshControl,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MapPin, Power, Loader, Activity } from 'lucide-react-native';
@@ -105,7 +106,17 @@ export default function MapTabScreen() {
           <Text style={styles.subhead}>Your latest location</Text>
         </View>
 
-        <View style={styles.heroCard}>
+        <TouchableOpacity
+          testID="map-location-card"
+          style={styles.heroCard}
+          activeOpacity={0.85}
+          disabled={!latest?.latitude || !latest?.longitude}
+          onPress={() =>
+            Linking.openURL(
+              `https://www.google.com/maps/search/?api=1&query=${latest.latitude},${latest.longitude}`,
+            )
+          }
+        >
           <View style={styles.pinWrap}>
             <MapPin size={32} color={colors.brand} strokeWidth={2.2} />
           </View>
@@ -138,7 +149,7 @@ export default function MapTabScreen() {
               <Text style={styles.address}>Turn on sharing below so friends can see where you are.</Text>
             </>
           )}
-        </View>
+        </TouchableOpacity>
 
         <TouchableOpacity
           testID="toggle-background-button"

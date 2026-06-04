@@ -89,7 +89,7 @@ export async function startBackgroundTracking(): Promise<boolean> {
       accuracy: Location.Accuracy.Balanced,
       timeInterval: 10 * 60 * 1000, // 10 min
       distanceInterval: 50, // 50m
-      showsBackgroundLocationIndicator: false,
+      showsBackgroundLocationIndicator: true,
       foregroundService: {
         notificationTitle: 'Consnow is sharing your location',
         notificationBody: 'Updating your trusted friends every 10 minutes.',
