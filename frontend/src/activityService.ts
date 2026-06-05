@@ -13,6 +13,7 @@
  */
 
 import * as Location from 'expo-location';
+import { NativeModules, Platform } from 'react-native';
 
 export type Activity =
   | 'stationary'
@@ -29,6 +30,101 @@ export type ActivityResult = {
   availability: Availability;
   speed_mps: number | null;
 };
+
+type NativeActivityState = 'stationary' | 'moving' | 'unavailable';
+
+type NativeActivityModule = {
+  getCurrentActivity?: () => Promise<unknown> | unknown;
+  getCurrentActivitySync?: () => unknown;
+  isStationary?: () => Promise<unknown> | unknown;
+  isStationarySync?: () => unknown;
+};
+
+let nativeActivityState: NativeActivityState = 'unavailable';
+
+function nativeActivityModule(): NativeActivityModule | null {
+  if (Platform.OS === 'ios') {
+    return (NativeModules.CMMotionActivityManager as NativeActivityModule | undefined) || null;
+  }
+  if (Platform.OS === 'android') {
+    return (NativeModules.ActivityRecognitionClient as NativeActivityModule | undefined) || null;
+  }
+  return null;
+}
+
+function normalizeNativeActivity(value: unknown): NativeActivityState {
+  if (typeof value === 'boolean') return value ? 'stationary' : 'moving';
+  if (typeof value === 'string') {
+    const state = value.toLowerCase();
+    if (state === 'stationary' || state === 'still') return 'stationary';
+    if (
+      state === 'moving' ||
+      state === 'walking' ||
+      state === 'running' ||
+      state === 'cycling' ||
+      state === 'automotive' ||
+      state === 'in_vehicle' ||
+      state === 'on_bicycle' ||
+      state === 'on_foot'
+    ) {
+      return 'moving';
+    }
+  }
+  if (value && typeof value === 'object') {
+    const activity = value as Record<string, unknown>;
+    if (activity.stationary === true || activity.still === true) return 'stationary';
+    if (
+      activity.moving === true ||
+      activity.walking === true ||
+      activity.running === true ||
+      activity.cycling === true ||
+      activity.automotive === true ||
+      activity.inVehicle === true ||
+      activity.onBicycle === true ||
+      activity.onFoot === true
+    ) {
+      return 'moving';
+    }
+    return normalizeNativeActivity(activity.activity || activity.state || activity.type);
+  }
+  return 'unavailable';
+}
+
+function updateNativeActivityState(value: unknown) {
+  nativeActivityState = normalizeNativeActivity(value);
+}
+
+function readNativeActivityState(): NativeActivityState {
+  const nativeModule = nativeActivityModule();
+  if (!nativeModule) return 'unavailable';
+
+  try {
+    if (typeof nativeModule.isStationarySync === 'function') {
+      updateNativeActivityState(nativeModule.isStationarySync());
+      return nativeActivityState;
+    }
+    if (typeof nativeModule.getCurrentActivitySync === 'function') {
+      updateNativeActivityState(nativeModule.getCurrentActivitySync());
+      return nativeActivityState;
+    }
+    if (typeof nativeModule.isStationary === 'function') {
+      void Promise.resolve(nativeModule.isStationary()).then(updateNativeActivityState).catch(() => {
+        nativeActivityState = 'unavailable';
+      });
+      return nativeActivityState;
+    }
+    if (typeof nativeModule.getCurrentActivity === 'function') {
+      void Promise.resolve(nativeModule.getCurrentActivity()).then(updateNativeActivityState).catch(() => {
+        nativeActivityState = 'unavailable';
+      });
+      return nativeActivityState;
+    }
+  } catch {
+    nativeActivityState = 'unavailable';
+  }
+
+  return 'unavailable';
+}
 
 /**
  * Map activity → availability per product spec.
@@ -61,6 +157,12 @@ export function availabilityFor(activity: Activity): Availability {
  *   >= 7.0 : automotive
  */
 export function detectActivityFromLocation(loc: Location.LocationObject): ActivityResult {
+  if (readNativeActivityState() === 'stationary') {
+    const rawSpeed = loc.coords.speed;
+    const speed = typeof rawSpeed === 'number' && rawSpeed >= 0 ? rawSpeed : null;
+    return { activity: 'stationary', availability: availabilityFor('stationary'), speed_mps: speed };
+  }
+
   const rawSpeed = loc.coords.speed;
   const speed = typeof rawSpeed === 'number' && rawSpeed >= 0 ? rawSpeed : null;
 

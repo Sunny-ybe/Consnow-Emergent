@@ -28,12 +28,13 @@ type Visit = {
   place_category?: string;
   formatted_address?: string;
   started_at: string;
-  ended_at: string;
+  ended_at: string | null;
   center_lat?: number;
   center_lng?: number;
   activity?: string;
   availability?: string;
   visit_count?: number;
+  duration_minutes?: number | null;
 };
 
 type Transport = {
@@ -85,7 +86,15 @@ function DashedLine() {
   );
 }
 
-const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: FlatItem; minuteTick: number }) {
+const FlatItemRow = memo(function FlatItemRow({
+  item,
+  minuteTick,
+  timezone,
+}: {
+  item: FlatItem;
+  minuteTick: number;
+  timezone: string;
+}) {
   if (item.type === 'daySeparator') {
     return <View style={styles.daySep} />;
   }
@@ -101,9 +110,9 @@ const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: Flat
           <View style={styles.transportPill}>
             <Text style={styles.transportText}>
               {[
-                transportMode(t.distance_m, t.duration),
                 formatTransportDistance(t.distance_m),
                 formatTransportDuration(t.duration),
+                formatTransportSpeed(t.distance_m, t.duration),
               ]
                 .filter(Boolean)
                 .join(' · ')}
@@ -152,9 +161,9 @@ const FlatItemRow = memo(function FlatItemRow({ item, minuteTick }: { item: Flat
             ) : null}
             <View style={styles.metaRow}>
               <Text style={styles.duration}>{formatVisitDuration(v, ongoing, minuteTick)}</Text>
-              <Text style={styles.timeRange}>{formatTimeRange(v.started_at, v.ended_at, ongoing)}</Text>
+              <Text style={styles.timeRange}>{formatTimeRange(v.started_at, v.ended_at, ongoing, timezone)}</Text>
             </View>
-            {v.availability ? (
+            {ongoing && v.availability ? (
               <View style={styles.badgeRow}>
                 <AvailabilityBadge
                   availability={v.availability as any}
@@ -182,6 +191,7 @@ export default function TimelineScreen() {
   const [scopeOff, setScopeOff] = useState(false);
   const [visibleDayLabel, setVisibleDayLabel] = useState('Today');
   const [displayedDays, setDisplayedDays] = useState(3);
+  const [timelineTimezone, setTimelineTimezone] = useState('UTC');
 
   // Tick every 60 s so ongoing-visit durations stay live
   const [minuteTick, setMinuteTick] = useState(Date.now());
@@ -200,15 +210,18 @@ export default function TimelineScreen() {
   const loadTimeline = useCallback(async (uid?: string | null) => {
     try {
       const res = await getTimeline(uid || undefined);
-      const newItems: TimelineItem[] = res.visits || [];
+      const newItems: TimelineItem[] = filterShortVisits(res.visits || []);
+      const timezone = res.timezone || 'UTC';
       setItems(newItems);
+      setTimelineTimezone(timezone);
       setScopeOff(res.scope === 'off');
       setDisplayedDays(3);
       // Seed the sticky header immediately so it's correct before onViewableItemsChanged fires
-      const firstGroup = groupByDay(newItems)[0];
+      const firstGroup = groupByDay(newItems, timezone)[0];
       setVisibleDayLabel(firstGroup?.label ?? 'Today');
     } catch (e: any) {
       setItems([]);
+      setTimelineTimezone('UTC');
       if (e?.response?.status === 403) setScopeOff(true);
     }
   }, []);
@@ -226,7 +239,10 @@ export default function TimelineScreen() {
     setRefreshing(false);
   }, [loadTimeline, selected]);
 
-  const grouped = useMemo(() => normalizeTodayGroups(groupByDay(collapseRepeatedVisits(items))), [items]);
+  const grouped = useMemo(
+    () => normalizeTodayGroups(groupByDay(collapseRepeatedVisits(items, timelineTimezone), timelineTimezone), timelineTimezone),
+    [items, timelineTimezone],
+  );
   const flatItems = useMemo(() => buildFlatItems(grouped.slice(0, displayedDays)), [displayedDays, grouped]);
 
   const onEndReached = useCallback(() => {
@@ -234,8 +250,10 @@ export default function TimelineScreen() {
   }, [grouped.length]);
 
   const renderTimelineItem = useCallback(
-    ({ item }: { item: FlatItem }) => <FlatItemRow item={item} minuteTick={minuteTick} />,
-    [minuteTick],
+    ({ item }: { item: FlatItem }) => (
+      <FlatItemRow item={item} minuteTick={minuteTick} timezone={timelineTimezone} />
+    ),
+    [minuteTick, timelineTimezone],
   );
 
   // Both refs must be stable across renders — FlatList warns if they change
@@ -362,7 +380,7 @@ function buildFlatItems(groups: DayGroup[]): FlatItem[] {
   return flat;
 }
 
-function collapseRepeatedVisits(items: TimelineItem[]): TimelineItem[] {
+function collapseRepeatedVisits(items: TimelineItem[], timezone: string): TimelineItem[] {
   const collapsed: TimelineItem[] = [];
   let run: Visit[] = [];
   let pendingTransport: Transport[] = [];
@@ -400,7 +418,7 @@ function collapseRepeatedVisits(items: TimelineItem[]): TimelineItem[] {
     const previousPlace = normalizePlaceName(previous.place_name);
     const itemPlace = normalizePlaceName(item.place_name);
     const samePlace = previousPlace.length > 0 && previousPlace === itemPlace;
-    const sameDay = dayKey(new Date(previous.started_at)) === dayKey(new Date(item.started_at));
+    const sameDay = dayKey(new Date(previous.started_at), timezone) === dayKey(new Date(item.started_at), timezone);
 
     if (samePlace && sameDay) {
       run.push(item);
@@ -427,7 +445,9 @@ function mergeVisitRun(visits: Visit[]): Visit {
     if (new Date(visit.started_at).getTime() < new Date(startedAt).getTime()) {
       startedAt = visit.started_at;
     }
-    if (new Date(visit.ended_at).getTime() > new Date(endedAt).getTime()) {
+    if (visit.ended_at === null) {
+      endedAt = null;
+    } else if (endedAt !== null && new Date(visit.ended_at).getTime() > new Date(endedAt).getTime()) {
       endedAt = visit.ended_at;
     }
   }
@@ -444,8 +464,18 @@ function normalizePlaceName(place?: string): string {
   return (place || '').trim().toLowerCase();
 }
 
-function normalizeTodayGroups(groups: DayGroup[]): DayGroup[] {
-  const today = dayKey(new Date());
+function filterShortVisits(items: TimelineItem[]): TimelineItem[] {
+  return items.filter((item) => item.type === 'transport' || !isShortClosedVisit(item));
+}
+
+function isShortClosedVisit(v: Visit): boolean {
+  if (v.ended_at === null) return false;
+  if (typeof v.duration_minutes !== 'number') return false;
+  return v.duration_minutes < 5;
+}
+
+function normalizeTodayGroups(groups: DayGroup[], timezone: string): DayGroup[] {
+  const today = dayKey(new Date(), timezone);
   const hasTodayVisit = groups.some((group) =>
     group.day === today && group.items.some((item) => item.type !== 'transport'),
   );
@@ -505,12 +535,13 @@ function openInMaps(lat: number, lng: number) {
   Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
 }
 
-function isOngoing(endedAt: string, now = Date.now()): boolean {
+function isOngoing(endedAt: string | null, now = Date.now()): boolean {
+  if (endedAt === null) return true;
   const ended = new Date(endedAt).getTime();
   return ended <= now && now - ended < 15 * 60 * 1000;
 }
 
-function groupByDay(items: TimelineItem[]): DayGroup[] {
+function groupByDay(items: TimelineItem[], timezone: string): DayGroup[] {
   const groups: DayGroup[] = [];
   for (const item of items) {
     if (item.type === 'transport') {
@@ -518,35 +549,56 @@ function groupByDay(items: TimelineItem[]): DayGroup[] {
       continue;
     }
     const d = new Date(item.started_at);
-    const key = dayKey(d);
+    const key = dayKey(d, timezone);
     if (groups.length === 0 || groups[groups.length - 1].day !== key) {
-      groups.push({ day: key, label: dayLabel(d), items: [] });
+      groups.push({ day: key, label: dayLabel(d, timezone), items: [] });
     }
     groups[groups.length - 1].items.push(item);
   }
   return groups;
 }
 
-function dayKey(d: Date): string {
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+function dayKey(d: Date, timezone: string): string {
+  const parts = dateParts(d, timezone);
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-function dayLabel(d: Date): string {
+function dayLabel(d: Date, timezone: string): string {
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
-  const same = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
+  const same = (a: Date, b: Date) => dayKey(a, timezone) === dayKey(b, timezone);
   if (same(d, today)) return 'Today';
   if (same(d, yesterday)) return 'Yesterday';
-  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  try {
+    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', timeZone: timezone });
+  } catch {
+    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  }
 }
 
-function formatDuration(start: string, end: string, ongoing = false, now = Date.now()): string {
+function dateParts(d: Date, timezone: string): { year: string; month: string; day: string } {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      timeZone: timezone,
+    }).formatToParts(d);
+    const value = (type: string) => parts.find((part) => part.type === type)?.value || '';
+    return { year: value('year'), month: value('month'), day: value('day') };
+  } catch {
+    return {
+      year: String(d.getFullYear()),
+      month: String(d.getMonth() + 1),
+      day: String(d.getDate()),
+    };
+  }
+}
+
+function formatDuration(start: string, end: string | null, ongoing = false, now = Date.now()): string {
   const s = new Date(start).getTime();
-  const e = ongoing ? now : new Date(end).getTime();
+  const e = ongoing ? now : new Date(end || start).getTime();
   const raw = Math.round((e - s) / 60000);
   // Math.max(0, NaN) === NaN in JS; guard explicitly
   const mins = isNaN(raw) ? 0 : Math.max(0, raw);
@@ -558,20 +610,24 @@ function formatDuration(start: string, end: string, ongoing = false, now = Date.
 }
 
 function formatVisitDuration(v: Visit, ongoing = false, now = Date.now()): string {
-  const count = v.visit_count || 1;
-  if (count <= 1) return formatDuration(v.started_at, v.ended_at, ongoing, now);
-
-  return `${count} stops · ${formatDuration(v.started_at, v.ended_at, ongoing, now)}`;
+  return formatDuration(v.started_at, v.ended_at, ongoing, now);
 }
 
-function formatTimeRange(start: string, end: string, ongoing = false): string {
+function formatTimeRange(start: string, end: string | null, ongoing = false, timezone = 'UTC'): string {
   try {
     const fmt = (d: Date) =>
-      d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: timezone });
     if (ongoing) return `${fmt(new Date(start))} – now`;
-    return `${fmt(new Date(start))} – ${fmt(new Date(end))}`;
+    return `${fmt(new Date(start))} – ${fmt(new Date(end || start))}`;
   } catch {
-    return '';
+    try {
+      const fmt = (d: Date) =>
+        d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+      if (ongoing) return `${fmt(new Date(start))} – now`;
+      return `${fmt(new Date(start))} – ${fmt(new Date(end || start))}`;
+    } catch {
+      return '';
+    }
   }
 }
 
@@ -583,18 +639,18 @@ function formatTransportDistance(m: number): string {
 function formatTransportDuration(secs: number): string {
   const mins = Math.round(secs / 60);
   if (mins < 1) return '<1 min';
-  if (mins < 60) return `${mins} min`;
+  if (mins < 60) return `${mins}min`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-function transportMode(distance_m: number, duration: number): string {
-  const speed = duration > 0 ? distance_m / duration : 0;
-  if (speed < 1.4) return '🚶‍♂️ Walking';
-  if (speed < 4) return '🏃‍♂️ Running';
-  if (speed < 7) return '🚴‍♂️ Cycling';
-  return '🚘 Driving';
+function formatTransportSpeed(distance_m: number, duration: number): string {
+  if (!distance_m || !duration) return '';
+  const distanceKm = distance_m / 1000;
+  const durationMinutes = duration / 60;
+  const speed = Math.round((distanceKm / durationMinutes) * 60 * 10) / 10;
+  return `${speed.toFixed(1)} km/h`;
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────

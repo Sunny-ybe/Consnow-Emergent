@@ -41,6 +41,15 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK_NAME)) {
     for (const loc of locations) {
       try {
         const { activity, availability, speed_mps } = detectActivityFromLocation(loc);
+        if (
+          activity !== 'walking' &&
+          activity !== 'running' &&
+          activity !== 'cycling' &&
+          activity !== 'automotive'
+        ) {
+          continue;
+        }
+
         await api.post('/locations/ping', {
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,

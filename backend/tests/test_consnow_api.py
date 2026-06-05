@@ -2,10 +2,15 @@
 import os
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import requests
 import pytest
+from dotenv import load_dotenv
+from pymongo import MongoClient
 
 BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://location-log-22.preview.emergentagent.com").rstrip("/")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 # ---------- Auth ----------
@@ -163,6 +168,13 @@ class TestFriendshipFlow:
 
 # ---------- Location ----------
 class TestLocation:
+    START_LAT = 37.7749
+    START_LNG = -122.4194
+    FAR_LAT = 37.7765
+    FAR_LNG = -122.4194
+    INSIDE_LAT = 37.7751
+    INSIDE_LNG = -122.4194
+
     @pytest.fixture(scope="class")
     def alice(self):
         s = requests.Session(); s.headers["Content-Type"] = "application/json"
@@ -172,6 +184,57 @@ class TestLocation:
         d = r.json()
         s.headers["Authorization"] = f"Bearer {d['access_token']}"
         return s, d["user"]
+
+    def _fresh_user(self, api):
+        u = uuid.uuid4().hex[:8]
+        r = api.post(f"{BASE_URL}/api/auth/signup", json={
+            "email": f"visit_{u}@consnow.app",
+            "password": "password123",
+            "display_name": f"Visit {u}",
+            "username": f"visit_{u}",
+        })
+        assert r.status_code == 200, r.text
+        data = r.json()
+        api.headers["Authorization"] = f"Bearer {data['access_token']}"
+        return api, data["user"]
+
+    def _ping(self, s, latitude, longitude, timestamp=None):
+        payload = {
+            "latitude": latitude,
+            "longitude": longitude,
+        }
+        if timestamp:
+            payload["timestamp"] = timestamp
+        r = s.post(f"{BASE_URL}/api/locations/ping", json=payload)
+        assert r.status_code == 200, r.text
+
+    def _timeline_visits(self, s):
+        r = s.get(f"{BASE_URL}/api/locations/timeline")
+        assert r.status_code == 200, r.text
+        return [v for v in r.json()["visits"] if v.get("type") == "visit"]
+
+    def _timeline(self, s):
+        r = s.get(f"{BASE_URL}/api/locations/timeline")
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def _first_visit(self, timeline):
+        visits = [v for v in timeline["visits"] if v.get("type") == "visit"]
+        assert len(visits) >= 1
+        return visits[0]
+
+    def _parse_iso(self, value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    def _visit_ids(self, timeline):
+        return [v["id"] for v in timeline["visits"] if v.get("type") == "visit"]
+
+    def _visits_collection(self):
+        mongo_url = os.environ.get("MONGO_URL")
+        db_name = os.environ.get("DB_NAME")
+        if not mongo_url or not db_name:
+            pytest.skip("MONGO_URL and DB_NAME are required to create an open visit fixture")
+        return MongoClient(mongo_url)[db_name]["visits"]
 
     def test_ping_mumbai(self, alice):
         s, _ = alice
@@ -213,6 +276,125 @@ class TestLocation:
         assert r.status_code == 200
         assert isinstance(r.json(), list)
         assert len(r.json()) >= 1
+
+    def test_two_out_of_range_pings_do_not_close_visit(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, self.START_LAT, self.START_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+
+        visits = self._timeline_visits(s)
+        assert len(visits) == 1
+        assert visits[0]["center_lat"] == self.START_LAT
+        assert visits[0]["center_lng"] == self.START_LNG
+        assert visits[0]["out_of_range_ping_count"] == 2
+
+    def test_three_out_of_range_pings_close_visit_and_open_new_visit(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, self.START_LAT, self.START_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+
+        visits = self._timeline_visits(s)
+        assert len(visits) == 2
+        assert visits[0]["center_lat"] == self.FAR_LAT
+        assert visits[0]["center_lng"] == self.FAR_LNG
+        assert visits[0]["out_of_range_ping_count"] == 0
+        assert visits[1]["center_lat"] == self.START_LAT
+        assert visits[1]["center_lng"] == self.START_LNG
+        assert visits[1]["out_of_range_ping_count"] == 3
+
+    def test_out_of_range_counter_resets_when_ping_returns_inside_visit(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, self.START_LAT, self.START_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+        self._ping(s, self.FAR_LAT, self.FAR_LNG)
+        self._ping(s, self.INSIDE_LAT, self.INSIDE_LNG)
+
+        visits = self._timeline_visits(s)
+        assert len(visits) == 1
+        assert visits[0]["center_lat"] == self.START_LAT
+        assert visits[0]["center_lng"] == self.START_LNG
+        assert visits[0]["last_lat"] == self.INSIDE_LAT
+        assert visits[0]["last_lng"] == self.INSIDE_LNG
+        assert visits[0]["out_of_range_ping_count"] == 0
+
+    def test_timeline_uses_india_timezone_from_patna_location(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, 25.6093, 85.1376, timestamp="2026-01-15T12:00:00+00:00")
+
+        timeline = self._timeline(s)
+        visit = self._first_visit(timeline)
+        started_at = self._parse_iso(visit["started_at"])
+
+        assert timeline["timezone"] == "Asia/Kolkata"
+        assert started_at.utcoffset().total_seconds() == 19800
+        assert started_at.hour == 17
+        assert started_at.minute == 30
+        assert not visit["started_at"].endswith("+00:00")
+        assert not visit["started_at"].endswith("Z")
+
+    def test_timeline_uses_arizona_timezone_from_tempe_location(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, 33.4255, -111.9400, timestamp="2026-01-15T12:00:00+00:00")
+
+        timeline = self._timeline(s)
+        visit = self._first_visit(timeline)
+        started_at = self._parse_iso(visit["started_at"])
+
+        assert timeline["timezone"] == "America/Phoenix"
+        assert started_at.utcoffset().total_seconds() == -25200
+        assert started_at.hour == 5
+        assert started_at.minute == 0
+
+    def test_timeline_without_location_pings_returns_fallback_timezone(self, api):
+        s, _ = self._fresh_user(api)
+
+        timeline = self._timeline(s)
+
+        assert "timezone" in timeline
+        assert isinstance(timeline["timezone"], str)
+        assert timeline["timezone"]
+        assert "visits" in timeline
+
+    def test_timeline_filters_visit_under_five_minutes(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:00:00+00:00")
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:04:59+00:00")
+
+        timeline = self._timeline(s)
+
+        assert self._visit_ids(timeline) == []
+
+    def test_timeline_includes_visit_exactly_five_minutes(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:00:00+00:00")
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:05:00+00:00")
+
+        timeline = self._timeline(s)
+        visits = [v for v in timeline["visits"] if v.get("type") == "visit"]
+
+        assert len(visits) == 1
+        assert visits[0]["started_at"] == "2026-01-15T12:00:00+00:00"
+        assert visits[0]["ended_at"] == "2026-01-15T12:05:00+00:00"
+
+    def test_timeline_includes_open_visit_under_five_minutes(self, api):
+        s, user = self._fresh_user(api)
+        started_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        self._ping(s, 40.7128, -74.0060, timestamp=started_at)
+
+        visits_col = self._visits_collection()
+        visit = visits_col.find_one({"user_id": user["id"]}, sort=[("started_at", -1)])
+        assert visit is not None
+        visits_col.update_one({"id": visit["id"]}, {"$set": {"ended_at": None}})
+
+        timeline = self._timeline(s)
+        visits = [v for v in timeline["visits"] if v.get("type") == "visit"]
+
+        assert len(visits) == 1
+        assert visits[0]["id"] == visit["id"]
+        assert visits[0]["ended_at"] is None
 
 
 # ---------- Scope-filtered friend timeline ----------

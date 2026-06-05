@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import bcrypt
 import httpx
@@ -14,6 +15,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
+try:
+    from timezonefinder import TimezoneFinder
+except ImportError:
+    TimezoneFinder = None
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -26,6 +31,7 @@ JWT_ALGORITHM = os.environ["JWT_ALGORITHM"]
 JWT_EXPIRE_MINUTES = int(os.environ["JWT_EXPIRE_MINUTES"])
 GOOGLE_GEOCODING_API_KEY = os.environ["GOOGLE_GEOCODING_API_KEY"]
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+timezone_finder = TimezoneFinder() if TimezoneFinder else None
 
 VALID_SCOPES = ["10m", "1h", "6h", "12h", "24h", "off"]
 SCOPE_TO_MINUTES = {
@@ -81,6 +87,92 @@ def hour_in_window(hour: int, start: int, end: int) -> bool:
     if start < end:
         return start <= hour < end
     return hour >= start or hour < end
+
+
+def timezone_for_coordinates(lat: float, lng: float) -> Optional[str]:
+    if not timezone_finder:
+        return None
+    try:
+        tz = None
+        for method_name in ("timezone_at", "certain_timezone_at"):
+            method = getattr(timezone_finder, method_name, None)
+            if callable(method):
+                tz = method(lat=lat, lng=lng)
+                if tz:
+                    break
+        if not tz:
+            closest = getattr(timezone_finder, "closest_timezone_at", None)
+            if callable(closest):
+                try:
+                    tz = closest(lat=lat, lng=lng, delta_degree=2)
+                except TypeError:
+                    tz = closest(lat=lat, lng=lng)
+        return normalize_timezone(tz)
+    except Exception as e:
+        logger.warning(f"Timezone lookup failed: {e}")
+        return None
+
+
+def normalize_timezone(tz: Optional[str]) -> Optional[str]:
+    if not tz:
+        return None
+    if tz == "Asia/Calcutta":
+        tz = "Asia/Kolkata"
+    try:
+        ZoneInfo(tz)
+        return tz
+    except ZoneInfoNotFoundError:
+        return None
+
+
+async def timezone_for_user(user_id: str, user_doc: Optional[dict] = None) -> str:
+    user_timezone = normalize_timezone((user_doc or {}).get("timezone"))
+    if user_timezone:
+        return user_timezone
+
+    latest = await locations_col.find_one(
+        {"user_id": user_id}, {"_id": 0, "latitude": 1, "longitude": 1}, sort=[("timestamp", -1)]
+    )
+    if latest:
+        user_timezone = timezone_for_coordinates(latest["latitude"], latest["longitude"])
+        if user_timezone:
+            await users_col.update_one({"id": user_id}, {"$set": {"timezone": user_timezone}})
+            return user_timezone
+
+    latest_visit = await visits_col.find_one(
+        {"user_id": user_id}, {"_id": 0, "last_lat": 1, "last_lng": 1, "center_lat": 1, "center_lng": 1},
+        sort=[("ended_at", -1)]
+    )
+    if latest_visit:
+        lat = latest_visit.get("last_lat", latest_visit.get("center_lat"))
+        lng = latest_visit.get("last_lng", latest_visit.get("center_lng"))
+        if lat is not None and lng is not None:
+            user_timezone = timezone_for_coordinates(lat, lng)
+            if user_timezone:
+                await users_col.update_one({"id": user_id}, {"$set": {"timezone": user_timezone}})
+                return user_timezone
+
+    return "UTC"
+
+
+def visit_duration_minutes(v: dict) -> Optional[float]:
+    if v.get("ended_at") is None:
+        return None
+    try:
+        s = datetime.fromisoformat(v["started_at"].replace("Z", "+00:00"))
+        e = datetime.fromisoformat(v["ended_at"].replace("Z", "+00:00"))
+        return (e - s).total_seconds() / 60
+    except Exception:
+        return None
+
+
+def is_short_closed_visit(v: dict) -> bool:
+    duration_minutes = visit_duration_minutes(v)
+    if duration_minutes is None:
+        return False
+    return duration_minutes < 5
+
+
 locations_col = db["locations"]
 visits_col = db["visits"]
 
@@ -482,6 +574,9 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
 
     # Reverse geocode
     geo = await reverse_geocode(ping.latitude, ping.longitude)
+    user_timezone = timezone_for_coordinates(ping.latitude, ping.longitude)
+    if user_timezone:
+        await users_col.update_one({"id": uid}, {"$set": {"timezone": user_timezone}})
 
     import uuid
     loc_doc = {
@@ -509,11 +604,16 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
         dist = haversine_m(
             last_visit["center_lat"], last_visit["center_lng"], ping.latitude, ping.longitude
         )
-        if dist < 150:
-            last_ended = datetime.fromisoformat(last_visit["ended_at"].replace("Z", "+00:00"))
-            ping_time = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
-            gap_minutes = (ping_time - last_ended).total_seconds() / 60
-            same_place = gap_minutes <= 2
+        if dist <= 100:
+            same_place = True
+        else:
+            out_of_range_ping_count = int(last_visit.get("out_of_range_ping_count", 0) or 0) + 1
+            await visits_col.update_one(
+                {"id": last_visit["id"]},
+                {"$set": {"out_of_range_ping_count": out_of_range_ping_count}},
+            )
+            if out_of_range_ping_count < 3:
+                return {"ok": True, "place_name": geo["place_name"]}
 
     if same_place:
         await visits_col.update_one(
@@ -527,6 +627,7 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
                     "last_lng": ping.longitude,
                     "activity": ping.activity or last_visit.get("activity", "unknown"),
                     "availability": ping.availability or last_visit.get("availability", "available"),
+                    "out_of_range_ping_count": 0,
                 }
             },
         )
@@ -547,6 +648,7 @@ async def location_ping(ping: LocationPing, current_user: dict = Depends(get_cur
             "availability": ping.availability or "available",
             "started_at": now_iso,
             "ended_at": now_iso,
+            "out_of_range_ping_count": 0,
         }
         await visits_col.insert_one(new_visit)
 
@@ -560,46 +662,42 @@ async def get_timeline(
     current_user: dict = Depends(get_current_user),
 ):
     target_id = user_id or current_user["id"]
+    target_timezone = "UTC"
     if target_id != current_user["id"]:
         pair = pair_key(current_user["id"], target_id)
         f = await friendships_col.find_one({"pair": pair})
         if not f or f["status"] != "accepted":
             raise HTTPException(status_code=403, detail="Not friends")
+        target_user = await users_col.find_one({"id": target_id}, {"_id": 0, "timezone": 1})
+        target_timezone = await timezone_for_user(target_id, target_user)
         share = get_sharing_filter(f, target_id)
         if share == "BLOCKED":
-            return {"visits": [], "blocked": True, "reason": "off"}
+            return {"visits": [], "blocked": True, "reason": "off", "timezone": target_timezone}
         if share == "OUTSIDE_WINDOW":
-            return {"visits": [], "blocked": True, "reason": "window"}
+            return {"visits": [], "blocked": True, "reason": "window", "timezone": target_timezone}
         cursor = visits_col.find(
-            {"user_id": target_id, "ended_at": {"$lte": share.isoformat()}},
+            {"user_id": target_id, "$or": [
+                {"ended_at": {"$lte": share.isoformat()}},
+                {"ended_at": None},
+            ]},
             {"_id": 0},
         ).sort("started_at", -1).limit(limit)
     else:
+        target_timezone = await timezone_for_user(target_id, current_user)
         cursor = visits_col.find({"user_id": target_id}, {"_id": 0}).sort("started_at", -1).limit(limit)
 
-    # Collect and filter visits (cursor is DESC; prev_lat/prev_lng tracks the later visit)
+    # Collect and filter visits
     visits = []
-    prev_lat = prev_lng = None
     async for v in cursor:
-        short = False
-        try:
-            s = datetime.fromisoformat(v["started_at"].replace("Z", "+00:00"))
-            e = datetime.fromisoformat(v["ended_at"].replace("Z", "+00:00"))
-            short = (e - s).total_seconds() < 300
-        except Exception:
-            pass
-        if short and prev_lat is not None:
-            if haversine_m(prev_lat, prev_lng, v["center_lat"], v["center_lng"]) <= 50:
-                continue
+        if is_short_closed_visit(v):
+            continue
         visits.append(v)
-        prev_lat = v.get("center_lat")
-        prev_lng = v.get("center_lng")
 
     # Reverse to chronological order, then interleave transport segments
     visits.reverse()
     items = []
     for i, v in enumerate(visits):
-        items.append({**v, "type": "visit"})
+        items.append({**v, "type": "visit", "duration_minutes": visit_duration_minutes(v)})
         if i < len(visits) - 1:
             nxt = visits[i + 1]
             try:
@@ -624,7 +722,7 @@ async def get_timeline(
                 pass
 
     items.reverse()
-    return {"visits": items}
+    return {"visits": items, "timezone": target_timezone}
 
 
 @api.get("/locations/latest")

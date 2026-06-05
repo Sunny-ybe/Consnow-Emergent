@@ -23,15 +23,17 @@ import {
   backgroundTrackingUnsupported,
   backgroundUnsupportedReason,
 } from '@/src/locationService';
-import { getLatestLocation } from '@/src/api';
+import { getLatestLocation, listFriends } from '@/src/api';
 import { useAuth } from '@/src/auth';
 import { AvailabilityBadge } from '@/src/AvailabilityBadge';
 
 export default function MapTabScreen() {
   const { user } = useAuth();
   const [latest, setLatest] = useState<any>(null);
+  const [friendLocations, setFriendLocations] = useState<any[]>([]);
   const [tracking, setTracking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  void friendLocations;
 
   const loadLatest = useCallback(async () => {
     try {
@@ -47,18 +49,37 @@ export default function MapTabScreen() {
     setTracking(active);
   }, []);
 
+  const loadFriendLocations = useCallback(async () => {
+    try {
+      const data = await listFriends();
+      const friends = data.friends || [];
+      const locations = await Promise.all(
+        friends.map(async (friend: any) => {
+          const location = await getLatestLocation(friend.user.id);
+          return location ? { friend: friend.user, location } : null;
+        }),
+      );
+      setFriendLocations(locations.filter(Boolean));
+    } catch {
+      setFriendLocations([]);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       loadLatest();
+      loadFriendLocations();
       checkTracking();
-    }, [loadLatest, checkTracking]),
+      const id = setInterval(loadFriendLocations, 30_000);
+      return () => clearInterval(id);
+    }, [loadLatest, loadFriendLocations, checkTracking]),
   );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadLatest();
+    await Promise.all([loadLatest(), loadFriendLocations()]);
     setRefreshing(false);
-  }, [loadLatest]);
+  }, [loadLatest, loadFriendLocations]);
 
   const toggleBackground = async () => {
     if (backgroundTrackingUnsupported) {
