@@ -166,8 +166,11 @@ def visit_duration_minutes(v: dict) -> Optional[float]:
         return None
 
 
-def is_short_closed_visit(v: dict) -> bool:
-    duration_minutes = visit_duration_minutes(v)
+def is_short_closed_visit(v: dict, duration_minutes: Optional[float] = None) -> bool:
+    if v.get("ended_at") is None:
+        return False
+    if duration_minutes is None:
+        duration_minutes = visit_duration_minutes(v)
     if duration_minutes is None:
         return False
     return duration_minutes < 5
@@ -689,7 +692,16 @@ async def get_timeline(
     # Collect and filter visits
     visits = []
     async for v in cursor:
-        if is_short_closed_visit(v):
+        duration_minutes = visit_duration_minutes(v)
+        logger.info(
+            "Timeline visit duration filter: id=%s place=%s started_at=%s ended_at=%s duration_minutes=%s",
+            v.get("id"),
+            v.get("place_name"),
+            v.get("started_at"),
+            v.get("ended_at"),
+            duration_minutes,
+        )
+        if is_short_closed_visit(v, duration_minutes):
             continue
         visits.append(v)
 

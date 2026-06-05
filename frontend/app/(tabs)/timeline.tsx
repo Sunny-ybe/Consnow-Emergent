@@ -469,9 +469,29 @@ function filterShortVisits(items: TimelineItem[]): TimelineItem[] {
 }
 
 function isShortClosedVisit(v: Visit): boolean {
+  const durationMinutes = visitDurationMinutes(v);
+  console.log(
+    'Timeline visit duration filter:',
+    v.id,
+    v.place_name,
+    'started_at=',
+    v.started_at,
+    'ended_at=',
+    v.ended_at,
+    'duration_minutes=',
+    durationMinutes,
+  );
   if (v.ended_at === null) return false;
-  if (typeof v.duration_minutes !== 'number') return false;
-  return v.duration_minutes < 5;
+  if (durationMinutes === null) return false;
+  return durationMinutes < 5;
+}
+
+function visitDurationMinutes(v: Visit): number | null {
+  if (v.ended_at === null) return null;
+  const started = new Date(v.started_at).getTime();
+  const ended = new Date(v.ended_at).getTime();
+  if (!Number.isFinite(started) || !Number.isFinite(ended)) return null;
+  return (ended - started) / 60000;
 }
 
 function normalizeTodayGroups(groups: DayGroup[], timezone: string): DayGroup[] {
