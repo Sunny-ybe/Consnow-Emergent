@@ -155,27 +155,6 @@ async def timezone_for_user(user_id: str, user_doc: Optional[dict] = None) -> st
     return "UTC"
 
 
-def visit_duration_minutes(v: dict) -> Optional[float]:
-    if v.get("ended_at") is None:
-        return None
-    try:
-        s = datetime.fromisoformat(v["started_at"].replace("Z", "+00:00"))
-        e = datetime.fromisoformat(v["ended_at"].replace("Z", "+00:00"))
-        return (e - s).total_seconds() / 60
-    except Exception:
-        return None
-
-
-def is_short_closed_visit(v: dict, duration_minutes: Optional[float] = None) -> bool:
-    if v.get("ended_at") is None:
-        return False
-    if duration_minutes is None:
-        duration_minutes = visit_duration_minutes(v)
-    if duration_minutes is None:
-        return False
-    return duration_minutes < 5
-
-
 locations_col = db["locations"]
 visits_col = db["visits"]
 
@@ -678,38 +657,21 @@ async def get_timeline(
             return {"visits": [], "blocked": True, "reason": "off", "timezone": target_timezone}
         if share == "OUTSIDE_WINDOW":
             return {"visits": [], "blocked": True, "reason": "window", "timezone": target_timezone}
-        cursor = visits_col.find(
-            {"user_id": target_id, "$or": [
-                {"ended_at": {"$lte": share.isoformat()}},
-                {"ended_at": None},
-            ]},
-            {"_id": 0},
-        ).sort("started_at", -1).limit(limit)
+        cursor = visits_col.find({"user_id": target_id}, {"_id": 0}).sort("started_at", -1).limit(limit)
     else:
         target_timezone = await timezone_for_user(target_id, current_user)
         cursor = visits_col.find({"user_id": target_id}, {"_id": 0}).sort("started_at", -1).limit(limit)
 
-    # Collect and filter visits
+    # Collect visits
     visits = []
     async for v in cursor:
-        duration_minutes = visit_duration_minutes(v)
-        logger.info(
-            "Timeline visit duration filter: id=%s place=%s started_at=%s ended_at=%s duration_minutes=%s",
-            v.get("id"),
-            v.get("place_name"),
-            v.get("started_at"),
-            v.get("ended_at"),
-            duration_minutes,
-        )
-        if is_short_closed_visit(v, duration_minutes):
-            continue
         visits.append(v)
 
     # Reverse to chronological order, then interleave transport segments
     visits.reverse()
     items = []
     for i, v in enumerate(visits):
-        items.append({**v, "type": "visit", "duration_minutes": visit_duration_minutes(v)})
+        items.append({**v, "type": "visit"})
         if i < len(visits) - 1:
             nxt = visits[i + 1]
             try:

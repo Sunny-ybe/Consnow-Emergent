@@ -34,7 +34,6 @@ type Visit = {
   activity?: string;
   availability?: string;
   visit_count?: number;
-  duration_minutes?: number | null;
 };
 
 type Transport = {
@@ -210,7 +209,7 @@ export default function TimelineScreen() {
   const loadTimeline = useCallback(async (uid?: string | null) => {
     try {
       const res = await getTimeline(uid || undefined);
-      const newItems: TimelineItem[] = filterShortVisits(res.visits || []);
+      const newItems: TimelineItem[] = res.visits || [];
       const timezone = res.timezone || 'UTC';
       setItems(newItems);
       setTimelineTimezone(timezone);
@@ -462,36 +461,6 @@ function mergeVisitRun(visits: Visit[]): Visit {
 
 function normalizePlaceName(place?: string): string {
   return (place || '').trim().toLowerCase();
-}
-
-function filterShortVisits(items: TimelineItem[]): TimelineItem[] {
-  return items.filter((item) => item.type === 'transport' || !isShortClosedVisit(item));
-}
-
-function isShortClosedVisit(v: Visit): boolean {
-  const durationMinutes = visitDurationMinutes(v);
-  console.log(
-    'Timeline visit duration filter:',
-    v.id,
-    v.place_name,
-    'started_at=',
-    v.started_at,
-    'ended_at=',
-    v.ended_at,
-    'duration_minutes=',
-    durationMinutes,
-  );
-  if (v.ended_at === null) return false;
-  if (durationMinutes === null) return false;
-  return durationMinutes < 5;
-}
-
-function visitDurationMinutes(v: Visit): number | null {
-  if (v.ended_at === null) return null;
-  const started = new Date(v.started_at).getTime();
-  const ended = new Date(v.ended_at).getTime();
-  if (!Number.isFinite(started) || !Number.isFinite(ended)) return null;
-  return (ended - started) / 60000;
 }
 
 function normalizeTodayGroups(groups: DayGroup[], timezone: string): DayGroup[] {

@@ -358,43 +358,39 @@ class TestLocation:
         assert timeline["timezone"]
         assert "visits" in timeline
 
-    def test_timeline_filters_visit_under_five_minutes(self, api):
+    def test_timeline_returns_three_minute_closed_visit_after_filter_revert(self, api):
         s, _ = self._fresh_user(api)
         self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:00:00+00:00")
-        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:04:59+00:00")
-
-        timeline = self._timeline(s)
-
-        assert self._visit_ids(timeline) == []
-
-    def test_timeline_includes_visit_exactly_five_minutes(self, api):
-        s, _ = self._fresh_user(api)
-        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:00:00+00:00")
-        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:05:00+00:00")
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:03:00+00:00")
 
         timeline = self._timeline(s)
         visits = [v for v in timeline["visits"] if v.get("type") == "visit"]
 
         assert len(visits) == 1
-        assert visits[0]["started_at"] == "2026-01-15T12:00:00+00:00"
-        assert visits[0]["ended_at"] == "2026-01-15T12:05:00+00:00"
+        assert visits[0]["center_lat"] == 40.7128
+        assert visits[0]["center_lng"] == -74.0060
 
-    def test_timeline_includes_open_visit_under_five_minutes(self, api):
-        s, user = self._fresh_user(api)
-        started_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-        self._ping(s, 40.7128, -74.0060, timestamp=started_at)
-
-        visits_col = self._visits_collection()
-        visit = visits_col.find_one({"user_id": user["id"]}, sort=[("started_at", -1)])
-        assert visit is not None
-        visits_col.update_one({"id": visit["id"]}, {"$set": {"ended_at": None}})
+    def test_timeline_returns_three_hour_forty_seven_minute_closed_visit(self, api):
+        s, _ = self._fresh_user(api)
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T12:00:00+00:00")
+        self._ping(s, 40.7128, -74.0060, timestamp="2026-01-15T15:47:00+00:00")
 
         timeline = self._timeline(s)
         visits = [v for v in timeline["visits"] if v.get("type") == "visit"]
 
         assert len(visits) == 1
-        assert visits[0]["id"] == visit["id"]
-        assert visits[0]["ended_at"] is None
+        started_at = self._parse_iso(visits[0]["started_at"])
+        ended_at = self._parse_iso(visits[0]["ended_at"])
+        assert ended_at - started_at == timedelta(hours=3, minutes=47)
+
+    def test_timeline_returns_empty_visits_for_user_with_no_visits(self, api):
+        s, _ = self._fresh_user(api)
+
+        r = s.get(f"{BASE_URL}/api/locations/timeline")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["visits"] == []
+        assert "No history yet" not in r.text
 
 
 # ---------- Scope-filtered friend timeline ----------
@@ -425,14 +421,11 @@ class TestScopeFilter:
         s2.post(f"{BASE_URL}/api/locations/ping", json={"latitude": 19.0760, "longitude": 72.8777})
         return s1, d1["user"], s2, d2["user"]
 
-    def test_friend_can_see_with_default_10m_scope(self, pair):
-        # default scope=10m means: u2's data only visible to u1 if older than 10 min
-        # Just-pinged data is too fresh → empty
+    def test_friend_can_see_timeline_with_default_sharing(self, pair):
         s1, _, _, u2 = pair
         r = s1.get(f"{BASE_URL}/api/locations/timeline", params={"user_id": u2["id"]})
         assert r.status_code == 200
-        # fresh ping is filtered out by 10m delay
-        assert r.json()["visits"] == []
+        assert len(r.json()["visits"]) >= 1
 
     def test_scope_off_hides_everything(self, pair):
         _, _, s2, u2 = pair
